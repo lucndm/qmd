@@ -1932,7 +1932,8 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     const output = filtered.map(row => {
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
       let body = opts.full ? row.body : undefined;
-      let snippet = !opts.full ? extractSnippet(row.body, query, 300, row.chunkPos, undefined, opts.intent).snippet : undefined;
+      const snippetInfo = !opts.full ? extractSnippet(row.body, query, 300, row.chunkPos, undefined, opts.intent) : undefined;
+      let snippet = snippetInfo?.snippet;
       if (opts.lineNumbers) {
         if (body) body = addLineNumbers(body);
         if (snippet) snippet = addLineNumbers(snippet);
@@ -1941,6 +1942,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         ...(docid && { docid: `#${docid}` }),
         score: Math.round(row.score * 100) / 100,
         file: toQmdPath(row.displayPath),
+        ...(snippetInfo && { line: snippetInfo.line }),
         title: row.title,
         ...(row.context && { context: row.context }),
         ...(body && { body }),
