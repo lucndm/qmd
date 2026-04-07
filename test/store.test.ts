@@ -3154,6 +3154,14 @@ describe("parseVirtualPath", () => {
     });
   });
 
+  test("parses qmd:// paths with index query parameters", () => {
+    expect(parseVirtualPath("qmd://collection/path.md?index=docs-v2")).toEqual({
+      collectionName: "collection",
+      path: "path.md",
+      indexName: "docs-v2",
+    });
+  });
+
   test("returns null for non-virtual paths", () => {
     expect(parseVirtualPath("/absolute/path.md")).toBe(null);
     expect(parseVirtualPath("~/home/path.md")).toBe(null);

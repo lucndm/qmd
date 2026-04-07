@@ -1130,6 +1130,42 @@ describe("search output formats", () => {
     expect(result.file).not.toMatch(/^\/home\//);
   });
 
+  test("custom-index search links include ?index= and can be passed back to qmd get", async () => {
+    const env = await createIsolatedTestEnv("custom-index-links");
+    const customColl = "fixtures-alt";
+    const customIndex = "release-notes";
+    const customCacheDir = join(testDir, `cache-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(customCacheDir, { recursive: true });
+
+    const sharedEnv = {
+      INDEX_PATH: "",
+      XDG_CACHE_HOME: customCacheDir,
+    };
+
+    const addResult = await runQmd(
+      ["--index", customIndex, "collection", "add", fixturesDir, "--name", customColl],
+      { dbPath: env.dbPath, configDir: env.configDir, env: sharedEnv }
+    );
+    expect(addResult.exitCode).toBe(0);
+
+    const searchResult = await runQmd(
+      ["--index", customIndex, "search", "test", "--json", "-n", "1"],
+      { dbPath: env.dbPath, configDir: env.configDir, env: sharedEnv }
+    );
+    expect(searchResult.exitCode).toBe(0);
+
+    const results = JSON.parse(searchResult.stdout);
+    const file = results[0]?.file;
+    expect(file).toMatch(new RegExp(`^qmd://${customColl}/.+\\?index=${customIndex}$`));
+
+    const getResult = await runQmd(
+      ["get", file, "-l", "2"],
+      { dbPath: env.dbPath, configDir: env.configDir, env: sharedEnv }
+    );
+    expect(getResult.exitCode).toBe(0);
+    expect(getResult.stdout.trim().length).toBeGreaterThan(0);
+  });
+
   test("search --files includes qmd:// path, docid, and context", async () => {
     const { stdout, exitCode } = await runQmd(["search", "test", "--files", "-n", "1"], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
