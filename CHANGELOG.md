@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Fix: preserve original filename case in `handelize()`. The previous
+  `.toLowerCase()` call made indexed paths unreachable on case-sensitive
+  filesystems (Linux). `qmd update` automatically migrates legacy
+  lowercase paths without re-embedding.
+
 ## [2.1.0] - 2026-04-05
 
 Code files now chunk at function and class boundaries via tree-sitter,
