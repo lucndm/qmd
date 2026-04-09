@@ -562,15 +562,16 @@ export class LlamaCpp implements LLM {
   /**
    * Initialize the llama instance (lazy)
    */
-  private async ensureLlama(): Promise<Llama> {
+  private async ensureLlama(allowBuild = true): Promise<Llama> {
     if (!this.llama) {
       const gpuMode = resolveLlamaGpuMode();
 
       const loadLlama = async (gpu: LlamaGpuMode) =>
         await getLlama({
-          build: "autoAttempt",
+          build: allowBuild ? "autoAttempt" : "never",
           logLevel: LlamaLogLevel.error,
           gpu,
+          skipDownload: !allowBuild,
         });
 
       let llama: Llama;
@@ -1254,14 +1255,14 @@ export class LlamaCpp implements LLM {
    * Get device/GPU info for status display.
    * Initializes llama if not already done.
    */
-  async getDeviceInfo(): Promise<{
+  async getDeviceInfo(options: { allowBuild?: boolean } = {}): Promise<{
     gpu: string | false;
     gpuOffloading: boolean;
     gpuDevices: string[];
     vram?: { total: number; used: number; free: number };
     cpuCores: number;
   }> {
-    const llama = await this.ensureLlama();
+    const llama = await this.ensureLlama(options.allowBuild ?? true);
     const gpuDevices = await llama.getGpuDeviceNames();
     let vram: { total: number; used: number; free: number } | undefined;
     if (llama.gpu) {
