@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- GPU: respect explicit `QMD_LLAMA_GPU=metal|vulkan|cuda` backend overrides instead of always using auto GPU selection. #529
 - Fix: preserve original filename case in `handelize()`. The previous
   `.toLowerCase()` call made indexed paths unreachable on case-sensitive
   filesystems (Linux). `qmd update` automatically migrates legacy
