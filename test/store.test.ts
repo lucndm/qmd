@@ -2805,6 +2805,31 @@ describe("Embedding batching", () => {
   });
 });
 
+describe("Token chunking guardrails", () => {
+  test("chunkDocumentByTokens keeps pathological single-line blobs under the token limit", async () => {
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        return Array.from({ length: text.length }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const chunks = await chunkDocumentByTokens("x".repeat(1200), 100, 15, 20);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.tokens <= 100)).toBe(true);
+      for (let i = 1; i < chunks.length; i++) {
+        expect(chunks[i]!.pos).toBeGreaterThan(chunks[i - 1]!.pos);
+      }
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+});
+
 // =============================================================================
 // Content-Addressable Storage Tests
 // =============================================================================
