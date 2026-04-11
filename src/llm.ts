@@ -889,20 +889,30 @@ export class LlamaCpp implements LLM {
    * detokenizes back to text if truncation is needed.
    * Returns the (possibly truncated) text and whether truncation occurred.
    */
-  private async truncateToContextSize(text: string): Promise<{ text: string; truncated: boolean }> {
-    if (!this.embedModel) return { text, truncated: false };
+  private resolveEmbedTokenLimit(): number {
+    const trainedContextSize = this.embedModel?.trainContextSize;
+    if (typeof trainedContextSize === "number" && Number.isFinite(trainedContextSize) && trainedContextSize > 0) {
+      return Math.max(1, Math.min(LlamaCpp.EMBED_CONTEXT_SIZE, trainedContextSize));
+    }
+    return LlamaCpp.EMBED_CONTEXT_SIZE;
+  }
 
-    const maxTokens = this.embedModel.trainContextSize;
-    if (maxTokens <= 0) return { text, truncated: false };
+  private async truncateToContextSize(
+    text: string
+  ): Promise<{ text: string; truncated: boolean; limit: number }> {
+    if (!this.embedModel) return { text, truncated: false, limit: LlamaCpp.EMBED_CONTEXT_SIZE };
+
+    const maxTokens = this.resolveEmbedTokenLimit();
+    if (maxTokens <= 0) return { text, truncated: false, limit: maxTokens };
 
     const tokens = this.embedModel.tokenize(text);
-    if (tokens.length <= maxTokens) return { text, truncated: false };
+    if (tokens.length <= maxTokens) return { text, truncated: false, limit: maxTokens };
 
     // Leave a small margin (4 tokens) for BOS/EOS overhead
     const safeLimit = Math.max(1, maxTokens - 4);
     const truncatedTokens = tokens.slice(0, safeLimit);
     const truncatedText = this.embedModel.detokenize(truncatedTokens);
-    return { text: truncatedText, truncated: true };
+    return { text: truncatedText, truncated: true, limit: maxTokens };
   }
 
   async embed(text: string, options: EmbedOptions = {}): Promise<EmbeddingResult | null> {
@@ -913,9 +923,9 @@ export class LlamaCpp implements LLM {
       const context = await this.ensureEmbedContext();
 
       // Guard: truncate text that exceeds model context window to prevent GGML crash
-      const { text: safeText, truncated } = await this.truncateToContextSize(text);
+      const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
       if (truncated) {
-        console.warn(`⚠ Text truncated to fit embedding context (${this.embedModel?.trainContextSize} tokens)`);
+        console.warn(`⚠ Text truncated to fit embedding context (${limit} tokens)`);
       }
 
       const embedding = await context.getEmbeddingFor(safeText);
@@ -951,9 +961,9 @@ export class LlamaCpp implements LLM {
         const embeddings: ({ embedding: number[]; model: string } | null)[] = [];
         for (const text of texts) {
           try {
-            const { text: safeText, truncated } = await this.truncateToContextSize(text);
+            const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
             if (truncated) {
-              console.warn(`⚠ Batch text truncated to fit embedding context (${this.embedModel?.trainContextSize} tokens)`);
+              console.warn(`⚠ Batch text truncated to fit embedding context (${limit} tokens)`);
             }
             const embedding = await context.getEmbeddingFor(safeText);
             this.touchActivity();
@@ -978,9 +988,9 @@ export class LlamaCpp implements LLM {
           const results: (EmbeddingResult | null)[] = [];
           for (const text of chunk) {
             try {
-              const { text: safeText, truncated } = await this.truncateToContextSize(text);
+              const { text: safeText, truncated, limit } = await this.truncateToContextSize(text);
               if (truncated) {
-                console.warn(`⚠ Batch text truncated to fit embedding context (${this.embedModel?.trainContextSize} tokens)`);
+                console.warn(`⚠ Batch text truncated to fit embedding context (${limit} tokens)`);
               }
               const embedding = await ctx.getEmbeddingFor(safeText);
               this.touchActivity();
