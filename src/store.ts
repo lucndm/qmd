@@ -1146,6 +1146,7 @@ export type Store = {
   insertContent: (hash: string, content: string, createdAt: string) => void;
   insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => void;
   findActiveDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
+  findOrMigrateLegacyDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
   updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => void;
   updateDocument: (documentId: number, title: string, hash: string, modifiedAt: string) => void;
   deactivateDocument: (collectionName: string, path: string) => void;
@@ -1236,7 +1237,7 @@ export async function reindexCollection(
     const hash = await hashContent(content);
     const title = extractTitle(content, relativeFile);
 
-    const existing = findActiveDocument(db, collectionName, path);
+    const existing = findOrMigrateLegacyDocument(db, collectionName, path);
 
     if (existing) {
       if (existing.hash === hash) {
@@ -1659,6 +1660,7 @@ export function createStore(dbPath?: string): Store {
     insertContent: (hash: string, content: string, createdAt: string) => insertContent(db, hash, content, createdAt),
     insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => insertDocument(db, collectionName, path, title, hash, createdAt, modifiedAt),
     findActiveDocument: (collectionName: string, path: string) => findActiveDocument(db, collectionName, path),
+    findOrMigrateLegacyDocument: (collectionName: string, path: string) => findOrMigrateLegacyDocument(db, collectionName, path),
     updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => updateDocumentTitle(db, documentId, title, modifiedAt),
     updateDocument: (documentId: number, title: string, hash: string, modifiedAt: string) => updateDocument(db, documentId, title, hash, modifiedAt),
     deactivateDocument: (collectionName: string, path: string) => deactivateDocument(db, collectionName, path),
@@ -1704,11 +1706,11 @@ export function getDocid(hash: string): string {
 /**
  * Handelize a filename to be more token-friendly.
  * - Convert triple underscore `___` to `/` (folder separator)
- * - Convert to lowercase
  * - Replace sequences of non-word chars (except /) with single dash
  * - Remove leading/trailing dashes from path segments
  * - Preserve folder structure (a/b/c/d.md stays structured)
  * - Preserve file extension
+ * - Preserve original case (important for case-sensitive filesystems)
  */
 /** Replace emoji/symbol codepoints with their hex representation (e.g. 🐘 → 1f418) */
 function emojiToHex(str: string): string {
@@ -1736,7 +1738,6 @@ export function handelize(path: string): string {
 
   const result = path
     .replace(/___/g, '/')       // Triple underscore becomes folder separator
-    .toLowerCase()
     .split('/')
     .map((segment, idx, arr) => {
       const isLastSegment = idx === arr.length - 1;
@@ -2112,6 +2113,57 @@ export function findActiveDocument(
     WHERE collection = ? AND path = ? AND active = 1
   `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
   return row ?? null;
+}
+
+/**
+ * Find an active document, falling back to a legacy lowercase path.
+ * If found under the legacy path, renames it in-place and rebuilds the
+ * FTS entry. Embeddings are keyed by content hash, so the rename is
+ * safe — no re-embedding required.
+ *
+ * @internal Used by reindexCollection and indexFiles during qmd update.
+ * Returns null if the document does not exist under either path.
+ */
+export function findOrMigrateLegacyDocument(
+  db: Database,
+  collectionName: string,
+  path: string
+): { id: number; hash: string; title: string } | null {
+  const existing = findActiveDocument(db, collectionName, path);
+  if (existing) return existing;
+
+  const legacyPath = path.toLowerCase();
+  if (legacyPath === path) return null;
+
+  const legacy = findActiveDocument(db, collectionName, legacyPath);
+  if (!legacy) return null;
+
+  // Wrap rename + FTS rebuild in a transaction for atomicity.
+  const migrate = db.transaction(() => {
+    // Use OR IGNORE so a UNIQUE conflict (e.g. both "readme.md" and
+    // "README.md" already exist) is a no-op rather than crashing.
+    const result = db.prepare(
+      `UPDATE OR IGNORE documents SET path = ? WHERE id = ? AND active = 1`
+    ).run(path, legacy.id);
+
+    if (result.changes === 0) return false;
+
+    // FTS5 does not reliably update via the documents_au trigger's
+    // INSERT OR REPLACE. Manually rebuild the FTS entry.
+    db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(legacy.id);
+    db.prepare(`
+      INSERT INTO documents_fts(rowid, filepath, title, body)
+      SELECT id, collection || '/' || path, title,
+             (SELECT doc FROM content WHERE hash = documents.hash)
+      FROM documents WHERE id = ?
+    `).run(legacy.id);
+
+    return true;
+  });
+
+  if (!migrate()) return null;
+
+  return findActiveDocument(db, collectionName, path);
 }
 
 /**

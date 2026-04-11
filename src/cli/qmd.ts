@@ -45,6 +45,7 @@ import {
   insertContent,
   insertDocument,
   findActiveDocument,
+  findOrMigrateLegacyDocument,
   updateDocumentTitle,
   updateDocument,
   deactivateDocument,
@@ -1581,8 +1582,8 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     const hash = await hashContent(content);
     const title = extractTitle(content, relativeFile);
 
-    // Check if document exists in this collection with this path
-    const existing = findActiveDocument(db, collectionName, path);
+    // Check if document exists (also migrates legacy lowercase paths)
+    const existing = findOrMigrateLegacyDocument(db, collectionName, path);
 
     if (existing) {
       if (existing.hash === hash) {
