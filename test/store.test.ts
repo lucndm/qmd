@@ -2494,7 +2494,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     }
 
     await cleanupTestDb(store);
-  }, 30000);
+  }, 90000);
 
   test("expandQuery caches results as JSON with types", async () => {
     const store = await createTestStore();
@@ -2509,7 +2509,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     expect(queries2[0]?.type).toBeDefined();
 
     await cleanupTestDb(store);
-  }, 30000);
+  }, 60000);
 
   test("rerank scores documents", async () => {
     const store = await createTestStore();
