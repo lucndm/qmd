@@ -110,6 +110,7 @@ enableProductionMode();
 
 let store: ReturnType<typeof createStore> | null = null;
 let storeDbPathOverride: string | undefined;
+let currentIndexName = "index";
 
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
@@ -160,6 +161,10 @@ function getDbPath(): string {
   return store?.dbPath ?? storeDbPathOverride ?? getDefaultDbPath();
 }
 
+function getActiveIndexName(): string {
+  return currentIndexName;
+}
+
 function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths
@@ -170,6 +175,7 @@ function setIndexName(name: string | null): void {
     // Replace path separators with underscores to create a valid filename
     normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
   }
+  currentIndexName = normalizedName || "index";
   storeDbPathOverride = normalizedName ? getDefaultDbPath(normalizedName) : undefined;
   // Reset open handle so next use opens the new index
   closeDb();
@@ -821,8 +827,6 @@ function contextRemove(pathArg: string): void {
 }
 
 function getDocument(filename: string, fromLine?: number, maxLines?: number, lineNumbers?: boolean): void {
-  const db = getDb();
-
   // Parse :linenum suffix from filename (e.g., "file.md:100")
   let inputPath = filename;
   const colonMatch = inputPath.match(/:(\d+)$/);
@@ -833,6 +837,14 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
       inputPath = inputPath.slice(0, -colonMatch[0].length);
     }
   }
+
+  const parsedIndexPath = isVirtualPath(inputPath) ? parseVirtualPath(inputPath) : null;
+  if (parsedIndexPath?.indexName) {
+    setIndexName(parsedIndexPath.indexName);
+    setConfigIndexName(parsedIndexPath.indexName);
+  }
+
+  const db = getDb();
 
   // Handle docid lookup (#abc123, abc123, "#abc123", "abc123", etc.)
   if (isDocid(inputPath)) {
@@ -845,7 +857,6 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
       process.exit(1);
     }
   }
-
   let doc: { collectionName: string; path: string; body: string } | null = null;
   let virtualPath: string;
 
@@ -1928,7 +1939,18 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
   }
 
   // Helper to create qmd:// URI from displayPath
-  const toQmdPath = (displayPath: string) => `qmd://${displayPath}`;
+  const toQmdPath = (displayPath: string) => {
+    const [collectionName, ...segments] = displayPath.split("/");
+    if (!collectionName || segments.length === 0) {
+      return `qmd://${displayPath}`;
+    }
+    const indexName = getActiveIndexName();
+    return buildVirtualPath(
+      collectionName,
+      segments.join("/"),
+      indexName === "index" ? undefined : indexName,
+    );
+  };
 
   if (opts.format === "json") {
     // JSON output for LLM consumption

@@ -566,6 +566,7 @@ export function getRealPath(path: string): string {
 export type VirtualPath = {
   collectionName: string;
   path: string;  // relative path within collection
+  indexName?: string;
 };
 
 /**
@@ -609,22 +610,26 @@ export function normalizeVirtualPath(input: string): string {
 export function parseVirtualPath(virtualPath: string): VirtualPath | null {
   // Normalize the path first
   const normalized = normalizeVirtualPath(virtualPath);
+  const [pathPart = normalized, queryString = ""] = normalized.split("?");
 
   // Match: qmd://collection-name[/optional-path]
   // Allows: qmd://name, qmd://name/, qmd://name/path
-  const match = normalized.match(/^qmd:\/\/([^\/]+)\/?(.*)$/);
+  const match = pathPart.match(/^qmd:\/\/([^\/]+)\/?(.*)$/);
   if (!match?.[1]) return null;
+  const indexName = new URLSearchParams(queryString).get("index")?.trim() || undefined;
   return {
     collectionName: match[1],
     path: match[2] ?? '',  // Empty string for collection root
+    ...(indexName ? { indexName } : {}),
   };
 }
 
 /**
  * Build a virtual path from collection name and relative path.
  */
-export function buildVirtualPath(collectionName: string, path: string): string {
-  return `qmd://${collectionName}/${path}`;
+export function buildVirtualPath(collectionName: string, path: string, indexName?: string): string {
+  const base = `qmd://${collectionName}/${path}`;
+  return indexName ? `${base}?index=${encodeURIComponent(indexName)}` : base;
 }
 
 /**
