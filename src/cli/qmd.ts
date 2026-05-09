@@ -1294,8 +1294,26 @@ function listFiles(pathArg?: string): void {
   let collectionName: string;
   let pathPrefix: string | null = null;
 
-  if (pathArg.startsWith('qmd://')) {
-    // Virtual path format: qmd://collection/path
+  const afterScheme = pathArg.startsWith('qmd://') ? pathArg.slice('qmd://'.length) : null;
+  if (afterScheme !== null && afterScheme.startsWith('/')) {
+    // Absolute-path collection: qmd:///Users/foo/bar — normalizeVirtualPath would corrupt
+    // this by stripping all leading slashes, so bypass parseVirtualPath entirely.
+    const normalized = afterScheme.replace(/\/$/, '');
+    const allColls = yamlListCollections();
+    const match = allColls
+      .filter(c => normalized === c.name || normalized.startsWith(c.name + '/'))
+      .sort((a, b) => b.name.length - a.name.length)[0];
+    if (!match) {
+      console.error(`Collection not found for path: ${pathArg}`);
+      console.error(`Run 'qmd ls' to see available collections.`);
+      closeDb();
+      process.exit(1);
+    }
+    collectionName = match.name;
+    const rest = normalized.slice(match.name.length).replace(/^\//, '');
+    pathPrefix = rest || null;
+  } else if (afterScheme !== null) {
+    // Normal virtual path: qmd://collection-name/path
     const parsed = parseVirtualPath(pathArg);
     if (!parsed) {
       console.error(`Invalid virtual path: ${pathArg}`);
@@ -1304,8 +1322,22 @@ function listFiles(pathArg?: string): void {
     }
     collectionName = parsed.collectionName;
     pathPrefix = parsed.path;
+  } else if (pathArg.startsWith('/')) {
+    // Raw absolute filesystem path — longest-prefix match against collection names
+    const normalized = pathArg.replace(/\/$/, '');
+    const allColls = yamlListCollections();
+    const match = allColls
+      .filter(c => normalized === c.name || normalized.startsWith(c.name + '/'))
+      .sort((a, b) => b.name.length - a.name.length)[0];
+    if (match) {
+      collectionName = match.name;
+      const rest = normalized.slice(match.name.length).replace(/^\//, '');
+      pathPrefix = rest || null;
+    } else {
+      collectionName = normalized;
+    }
   } else {
-    // Just collection name or collection/path
+    // Short collection name or name/path
     const parts = pathArg.split('/');
     collectionName = parts[0] || '';
     if (parts.length > 1) {
