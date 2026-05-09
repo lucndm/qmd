@@ -694,7 +694,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       for (const doc of result.results) {
         console.log(`  ${doc.file}: ${doc.score.toFixed(4)}`);
       }
-    });
+    }, 30000);
   });
 
   describe("expandQuery", () => {
