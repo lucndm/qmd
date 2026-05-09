@@ -1537,6 +1537,19 @@ describe("mcp http daemon", () => {
     );
     expect(addResult.exitCode).toBe(0);
 
+    const updateResult = await runQmd(
+      ["--index", customIndex, "update"],
+      {
+        dbPath: daemonDbPath,
+        configDir: customConfigDir,
+        env: {
+          INDEX_PATH: "",
+          XDG_CACHE_HOME: customCacheDir,
+        },
+      },
+    );
+    expect(updateResult.exitCode).toBe(0);
+
     const port = randomPort();
     const proc = spawnHttpServer(port, {
       args: ["--index", customIndex],
