@@ -15,6 +15,16 @@ done
 # to avoid native module ABI mismatches (e.g., better-sqlite3 compiled for bun vs node)
 DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
+# MCP stdio reserves stdout exclusively for JSON-RPC frames. node-llama-cpp
+# / llama.cpp / ggml can write native logs directly to stdout before JS-level
+# log handlers are attached, so seed the native quiet env before Node/Bun imports
+# the CLI and its LLM modules. Preserve explicit user values when provided.
+if [ "$1" = "mcp" ]; then
+  export LLAMA_LOG_LEVEL="${LLAMA_LOG_LEVEL:-error}"
+  export GGML_LOG_LEVEL="${GGML_LOG_LEVEL:-error}"
+  export GGML_BACKEND_SILENT="${GGML_BACKEND_SILENT:-1}"
+fi
+
 # Detect the package manager that installed dependencies by checking lockfiles.
 # $BUN_INSTALL is intentionally NOT checked — it only indicates that bun exists
 # on the system, not that it was used to install this package (see #361).
