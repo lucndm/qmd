@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { unlink, mkdtemp, rmdir, writeFile } from "node:fs/promises";
+import { unlink, mkdtemp, rmdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -51,6 +51,7 @@ import {
   insertContent,
   insertDocument,
   generateEmbeddings,
+  reindexCollection,
   type Store,
   type DocumentResult,
   type SearchResult,
@@ -2313,6 +2314,33 @@ describe("Vector Table", () => {
 
     await cleanupTestDb(store);
   });
+
+  test("insertEmbedding is idempotent for an existing vec0 hash_seq (#598)", async () => {
+    const store = await createTestStore();
+    store.ensureVecTable(2);
+
+    const hash = "existinghashseq";
+    const first = new Float32Array([0.1, 0.2]);
+    const second = new Float32Array([0.3, 0.4]);
+    const now = new Date().toISOString();
+
+    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, first);
+
+    // Reproduces sqlite-vec's broken conflict handling: vec0 does not honor OR REPLACE.
+    expect(() => {
+      store.db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, second);
+    }).toThrow(/UNIQUE constraint failed/i);
+
+    // QMD must therefore use DELETE + INSERT when upserting the vector row.
+    expect(() => store.insertEmbedding(hash, 0, 0, second, "test-model", now)).not.toThrow();
+
+    const vectorCount = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`${hash}_0`) as { count: number };
+    const metadataCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get(hash) as { count: number };
+    expect(vectorCount.count).toBe(1);
+    expect(metadataCount.count).toBe(1);
+
+    await cleanupTestDb(store);
+  });
 });
 
 // =============================================================================
@@ -2320,6 +2348,47 @@ describe("Vector Table", () => {
 // =============================================================================
 
 describe("Integration", () => {
+  test("reindexCollection soft-deletes removed files and preserves inactive content (#585)", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "orphan-regression-"));
+    const collectionName = "orphan-regression";
+
+    try {
+      for (let i = 1; i <= 5; i++) {
+        await writeFile(join(collectionDir, `doc-${i}.md`), `# Doc ${i}\n\nUnique body ${i}`);
+      }
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      const initial = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(initial.indexed).toBe(5);
+      expect(initial.removed).toBe(0);
+
+      await rm(join(collectionDir, "doc-3.md"));
+      await rm(join(collectionDir, "doc-4.md"));
+      await rm(join(collectionDir, "doc-5.md"));
+
+      const afterDelete = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterDelete.removed).toBe(3);
+
+      const counts = store.db.prepare(`
+        SELECT
+          SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive,
+          COUNT(*) AS total
+        FROM documents
+        WHERE collection = ?
+      `).get(collectionName) as { active: number; inactive: number; total: number };
+      const contentCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content`).get() as { count: number };
+
+      expect(counts).toEqual({ active: 2, inactive: 3, total: 5 });
+      expect(contentCount.count).toBe(5);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
   test("full document lifecycle: create, search, retrieve", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection({ pwd: "/test/notes", glob: "**/*.md" });

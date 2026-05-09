@@ -2032,13 +2032,15 @@ export function deleteInactiveDocuments(db: Database): number {
 }
 
 /**
- * Remove orphaned content hashes that are not referenced by any active document.
+ * Remove orphaned content hashes that are not referenced by any document.
+ * Inactive documents are soft-deleted tombstones, so their content rows must
+ * remain referenced until deleteInactiveDocuments() hard-deletes them.
  * Returns the number of orphaned content hashes deleted.
  */
 export function cleanupOrphanedContent(db: Database): number {
   const result = db.prepare(`
     DELETE FROM content
-    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
+    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents)
   `).run();
   return result.changes;
 }

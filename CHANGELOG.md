@@ -20,6 +20,9 @@
 - CLI: lazy-load `node-llama-cpp` so lightweight commands such as
   `qmd status` do not import native ML dependencies or trigger llama.cpp
   builds on ARM/no-GPU machines. #491
+- Store: keep content rows referenced by inactive documents during orphan
+  cleanup so `qmd update` preserves soft-deleted tombstones for removed
+  files. #585
 
 ## [2.1.0] - 2026-04-05
 
