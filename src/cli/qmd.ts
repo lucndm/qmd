@@ -3,7 +3,7 @@ import type { Database } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
-import { dirname, join as pathJoin, relative as relativePath } from "path";
+import { dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
 import { readFileSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync } from "fs";
 import { createInterface } from "readline/promises";
@@ -173,9 +173,7 @@ function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths
   if (name && name.includes('/')) {
-    const { resolve } = require('path');
-    const { cwd } = require('process');
-    const absolutePath = resolve(cwd(), name);
+    const absolutePath = pathResolve(process.cwd(), name);
     // Replace path separators with underscores to create a valid filename
     normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
   }

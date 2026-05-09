@@ -6,7 +6,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { homedir } from "os";
 import YAML from "yaml";
 
@@ -101,9 +101,7 @@ export function setConfigSource(source?: { configPath?: string; config?: Collect
 export function setConfigIndexName(name: string): void {
   // Resolve relative paths to absolute paths and sanitize for use as filename
   if (name.includes('/')) {
-    const { resolve } = require('path');
-    const { cwd } = require('process');
-    const absolutePath = resolve(cwd(), name);
+    const absolutePath = resolve(process.cwd(), name);
     // Replace path separators with underscores to create a valid filename
     currentIndexName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
   } else {
