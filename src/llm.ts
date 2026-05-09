@@ -451,7 +451,41 @@ export type LlamaCppConfig = {
 const DEFAULT_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_EXPAND_CONTEXT_SIZE = 2048;
 
-type LlamaGpuMode = "auto" | "metal" | "vulkan" | "cuda" | false;
+export type LlamaGpuMode = "auto" | "metal" | "vulkan" | "cuda" | false;
+
+type ParallelismOptions = {
+  gpu: string | false;
+  platform?: NodeJS.Platform;
+  computed: number;
+  envValue?: string;
+};
+
+export function resolveParallelismOverride(envValue = process.env.QMD_EMBED_PARALLELISM): number | undefined {
+  const normalized = envValue?.trim() ?? "";
+  if (!normalized) return undefined;
+
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    process.stderr.write(`QMD Warning: invalid QMD_EMBED_PARALLELISM="${envValue}", using automatic parallelism.\n`);
+    return undefined;
+  }
+
+  return Math.min(8, parsed);
+}
+
+export function resolveSafeParallelism(options: ParallelismOptions): number {
+  const override = resolveParallelismOverride(options.envValue);
+  if (override !== undefined) return override;
+
+  // node-llama-cpp/llama.cpp CUDA on Windows is unstable with multiple
+  // simultaneous contexts (ggml-cuda.cu:98 in #519). Vulkan and CPU do not
+  // show the same failure mode, so only serialize Windows CUDA by default.
+  if ((options.platform ?? process.platform) === "win32" && options.gpu === "cuda") {
+    return 1;
+  }
+
+  return Math.max(1, options.computed);
+}
 
 export function resolveLlamaGpuMode(envValue = process.env.QMD_LLAMA_GPU): LlamaGpuMode {
   const normalized = envValue?.trim().toLowerCase() ?? "";
@@ -726,16 +760,18 @@ export class LlamaCpp implements LLM {
         const vram = await llama.getVramState();
         const freeMB = vram.free / (1024 * 1024);
         const maxByVram = Math.floor((freeMB * 0.25) / perContextMB);
-        return Math.max(1, Math.min(8, maxByVram));
+        const computed = Math.max(1, Math.min(8, maxByVram));
+        return resolveSafeParallelism({ gpu: llama.gpu, computed });
       } catch {
-        return 2;
+        return resolveSafeParallelism({ gpu: llama.gpu, computed: 2 });
       }
     }
 
     // CPU: split cores across contexts. At least 4 threads per context.
     const cores = llama.cpuMathCores || 4;
     const maxContexts = Math.floor(cores / 4);
-    return Math.max(1, Math.min(4, maxContexts));
+    const computed = Math.max(1, Math.min(4, maxContexts));
+    return resolveSafeParallelism({ gpu: false, computed });
   }
 
   /**

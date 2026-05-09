@@ -13,6 +13,8 @@ import {
   getDefaultLlamaCpp,
   disposeDefaultLlamaCpp,
   resolveLlamaGpuMode,
+  resolveParallelismOverride,
+  resolveSafeParallelism,
   withLLMSession,
   canUnloadLLM,
   SessionReleasedError,
@@ -82,6 +84,44 @@ describe("QMD_LLAMA_GPU resolution", () => {
       expect(resolveLlamaGpuMode("rocm")).toBe("auto");
       expect(stderrSpy).toHaveBeenCalled();
       expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_LLAMA_GPU");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+});
+
+describe("LLM context parallelism safety", () => {
+  test("defaults Windows CUDA to one context to avoid ggml-cuda.cu:98 crashes", () => {
+    expect(resolveSafeParallelism({
+      gpu: "cuda",
+      platform: "win32",
+      computed: 8,
+      envValue: undefined,
+    })).toBe(1);
+  });
+
+  test("keeps non-Windows and non-CUDA backends on computed parallelism", () => {
+    expect(resolveSafeParallelism({ gpu: "cuda", platform: "linux", computed: 8 })).toBe(8);
+    expect(resolveSafeParallelism({ gpu: "vulkan", platform: "win32", computed: 8 })).toBe(8);
+    expect(resolveSafeParallelism({ gpu: false, platform: "win32", computed: 4 })).toBe(4);
+  });
+
+  test("QMD_EMBED_PARALLELISM overrides the Windows CUDA safety default", () => {
+    expect(resolveSafeParallelism({
+      gpu: "cuda",
+      platform: "win32",
+      computed: 8,
+      envValue: "2",
+    })).toBe(2);
+  });
+
+  test("QMD_EMBED_PARALLELISM clamps invalid values and warns", () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      expect(resolveParallelismOverride("0")).toBeUndefined();
+      expect(resolveParallelismOverride("bad")).toBeUndefined();
+      expect(stderrSpy).toHaveBeenCalledTimes(2);
+      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_EMBED_PARALLELISM");
     } finally {
       stderrSpy.mockRestore();
     }
