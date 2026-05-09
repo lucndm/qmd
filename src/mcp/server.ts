@@ -538,7 +538,11 @@ Intent-aware lex (C++ performance, not sports):
 // Transport: stdio (default)
 // =============================================================================
 
-export async function startMcpServer(): Promise<void> {
+export type McpStartupOptions = {
+  dbPath?: string;
+};
+
+export async function startMcpServer(options: McpStartupOptions = {}): Promise<void> {
   // Opt into production mode when the MCP server is actually started, not
   // when this module is merely imported for its exports. Importing the module
   // at the top level flipped the global production flag and broke test
@@ -547,7 +551,7 @@ export async function startMcpServer(): Promise<void> {
   enableProductionMode();
   const configPath = getConfigPath();
   const store = await createStore({
-    dbPath: getDefaultDbPath(),
+    dbPath: options.dbPath ?? getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
   });
   const server = await createMcpServer(store);
@@ -569,14 +573,17 @@ export type HttpServerHandle = {
  * Start MCP server over Streamable HTTP (JSON responses, no SSE).
  * Binds to localhost only. Returns a handle for shutdown and port discovery.
  */
-export async function startMcpHttpServer(port: number, options?: { quiet?: boolean }): Promise<HttpServerHandle> {
+export async function startMcpHttpServer(
+  port: number,
+  options: ({ quiet?: boolean } & McpStartupOptions) = {},
+): Promise<HttpServerHandle> {
   // See startMcpServer() for the rationale — flip production mode here so the
   // HTTP transport resolves the real database path, without leaking state into
   // callers that only import this module for its exports (e.g. tests).
   enableProductionMode();
   const configPath = getConfigPath();
   const store = await createStore({
-    dbPath: getDefaultDbPath(),
+    dbPath: options.dbPath ?? getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
   });
 

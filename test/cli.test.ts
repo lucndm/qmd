@@ -1403,13 +1403,17 @@ describe("mcp http daemon", () => {
   }
 
   /** Spawn a foreground HTTP server (non-blocking) and return the process */
-  function spawnHttpServer(port: number): import("child_process").ChildProcess {
-    const proc = spawn(tsxBin, [qmdScript, "mcp", "--http", "--port", String(port)], {
+  function spawnHttpServer(
+    port: number,
+    options: { args?: string[]; env?: Record<string, string> } = {},
+  ): import("child_process").ChildProcess {
+    const proc = spawn(tsxBin, [qmdScript, ...(options.args ?? []), "mcp", "--http", "--port", String(port)], {
       cwd: fixturesDir,
       env: {
         ...process.env,
         INDEX_PATH: daemonDbPath,
         QMD_CONFIG_DIR: daemonConfigDir,
+        ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1481,10 +1485,61 @@ describe("mcp http daemon", () => {
       const body = await res.json();
       expect(body.status).toBe("ok");
     } finally {
+      const closed = new Promise(r => proc.once("close", r));
       proc.kill("SIGTERM");
-      await new Promise(r => proc.on("close", r));
+      await closed;
     }
   });
+
+  test("foreground HTTP server honors --index when selecting the store", async () => {
+    const customIndex = "mcp-alt-index";
+    const customCacheDir = join(daemonTestDir, `cache-index-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const customConfigDir = join(daemonTestDir, `config-index-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(customCacheDir, { recursive: true });
+    await mkdir(customConfigDir, { recursive: true });
+
+    const addResult = await runQmd(
+      ["--index", customIndex, "collection", "add", fixturesDir, "--name", "mcp-fixtures"],
+      {
+        dbPath: daemonDbPath,
+        configDir: customConfigDir,
+        env: {
+          INDEX_PATH: "",
+          XDG_CACHE_HOME: customCacheDir,
+        },
+      },
+    );
+    expect(addResult.exitCode).toBe(0);
+
+    const port = randomPort();
+    const proc = spawnHttpServer(port, {
+      args: ["--index", customIndex],
+      env: {
+        INDEX_PATH: "",
+        XDG_CACHE_HOME: customCacheDir,
+        QMD_CONFIG_DIR: customConfigDir,
+      },
+    });
+
+    try {
+      const ready = await waitForServer(port);
+      expect(ready).toBe(true);
+
+      const res = await fetch(`http://localhost:${port}/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ searches: [{ type: "lex", query: "authentication" }], limit: 5 }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const files = body.results.map((r: { file: string }) => r.file);
+      expect(files.some((file: string) => file.includes("mcp-fixtures/notes/meeting.md"))).toBe(true);
+    } finally {
+      const closed = new Promise(r => proc.once("close", r));
+      proc.kill("SIGTERM");
+      await closed;
+    }
+  }, 10000);
 
   // -------------------------------------------------------------------------
   // Daemon lifecycle
