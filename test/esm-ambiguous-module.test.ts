@@ -9,7 +9,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("Node ESM entrypoints", () => {
   test("CLI --index path normalizes via setIndexName/setConfigIndexName under Node 22+", () => {
-    execFileSync("bun", ["run", "build"], {
+    execFileSync("npm", ["run", "build"], {
       cwd: repoRoot,
       encoding: "utf-8",
       stdio: "pipe",

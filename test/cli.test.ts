@@ -1438,6 +1438,7 @@ describe("mcp http daemon", () => {
         ...process.env,
         INDEX_PATH: daemonDbPath,
         QMD_CONFIG_DIR: daemonConfigDir,
+        PWD: fixturesDir,
         ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
