@@ -4159,6 +4159,21 @@ export type RankedListMeta = {
 };
 
 /**
+ * RRF list weights for hybridQuery.
+ *
+ * Original-query retrieval paths are the primary evidence and get 2x weight:
+ * - original FTS
+ * - original vector search
+ *
+ * Expansion-derived lists (lex/vec/hyde) stay at 1x regardless of list order,
+ * so a lex expansion inserted before original vector search cannot steal the
+ * original vector boost.
+ */
+export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  return rankedListMeta.map(meta => meta.queryType === "original" ? 2.0 : 1.0);
+}
+
+/**
  * Hybrid search: BM25 + vector + query expansion + RRF + chunked reranking.
  *
  * Pipeline:
@@ -4289,8 +4304,9 @@ export async function hybridQuery(
     }
   }
 
-  // Step 4: RRF fusion — first 2 lists (original FTS + first vec) get 2x weight
-  const weights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
+  // Step 4: RRF fusion — original-query FTS and vector lists get 2x weight;
+  // expansion-derived lists stay at 1x independent of insertion order.
+  const weights = getHybridRrfWeights(rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights);
   const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
   const candidates = fused.slice(0, candidateLimit);

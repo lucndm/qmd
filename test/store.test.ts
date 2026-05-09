@@ -52,10 +52,12 @@ import {
   insertDocument,
   generateEmbeddings,
   reindexCollection,
+  getHybridRrfWeights,
   type Store,
   type DocumentResult,
   type SearchResult,
   type RankedResult,
+  type RankedListMeta,
 } from "../src/store.js";
 import type { CollectionConfig } from "../src/collections.js";
 
@@ -2044,6 +2046,38 @@ describe("Reciprocal Rank Fusion", () => {
 
     // doc1 should rank higher due to weight
     expect(fused[0]!.file).toBe("doc1");
+  });
+
+  test("hybrid RRF weights boost original vector evidence over expansion-only hits", () => {
+    const originalFtsOnly = makeResult("original-fts-only.md", 0.95);
+    const expansionOnly = makeResult("lex-expansion-only.md", 0.95);
+    const originalVector = makeResult("original-vector.md", 0.95);
+
+    // Mirrors hybridQuery's common list order when a lex expansion exists:
+    // original FTS, lex expansion FTS, original vector.
+    const rankedLists = [
+      [originalFtsOnly],
+      [expansionOnly],
+      [originalVector],
+    ];
+    const rankedListMeta: RankedListMeta[] = [
+      { source: "fts", queryType: "original", query: "user query" },
+      { source: "fts", queryType: "lex", query: "lex expansion" },
+      { source: "vec", queryType: "original", query: "user query" },
+    ];
+
+    const positionBasedWeights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
+    const buggyOrder = reciprocalRankFusion(rankedLists, positionBasedWeights);
+
+    expect(buggyOrder.findIndex(r => r.file === "lex-expansion-only.md"))
+      .toBeLessThan(buggyOrder.findIndex(r => r.file === "original-vector.md"));
+
+    const semanticWeights = getHybridRrfWeights(rankedListMeta);
+    const fixedOrder = reciprocalRankFusion(rankedLists, semanticWeights);
+
+    expect(semanticWeights).toEqual([2.0, 1.0, 2.0]);
+    expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
+      .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
   });
 
   test("RRF adds top-rank bonus", () => {
