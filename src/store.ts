@@ -2226,8 +2226,8 @@ export function findActiveDocument(
 }
 
 /**
- * Find an active document, falling back to a legacy lowercase path.
- * If found under the legacy path, renames it in-place and rebuilds the
+ * Find an active document, falling back to a case-insensitive path match.
+ * If found under a different casing, renames it in-place and rebuilds the
  * FTS entry. Embeddings are keyed by content hash, so the rename is
  * safe — no re-embedding required.
  *
@@ -2242,10 +2242,12 @@ export function findOrMigrateLegacyDocument(
   const existing = findActiveDocument(db, collectionName, path);
   if (existing) return existing;
 
-  const legacyPath = path.toLowerCase();
-  if (legacyPath === path) return null;
-
-  const legacy = findActiveDocument(db, collectionName, legacyPath);
+  const legacy = db.prepare(`
+    SELECT id, hash, title FROM documents
+    WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
+    ORDER BY id
+    LIMIT 1
+  `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
   if (!legacy) return null;
 
   // Wrap rename + FTS rebuild in a transaction for atomicity.

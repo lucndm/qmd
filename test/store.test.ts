@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { unlink, mkdtemp, rmdir, writeFile, rm } from "node:fs/promises";
+import { unlink, mkdtemp, rmdir, writeFile, rm, mkdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -46,12 +46,12 @@ import {
   normalizeDocid,
   isDocid,
   syncConfigToDb,
+  reindexCollection,
   STRONG_SIGNAL_MIN_SCORE,
   STRONG_SIGNAL_MIN_GAP,
   insertContent,
   insertDocument,
   generateEmbeddings,
-  reindexCollection,
   getHybridRrfWeights,
   type Store,
   type DocumentResult,
@@ -2109,6 +2109,65 @@ describe("Reciprocal Rank Fusion", () => {
 
     // Lower k = higher scores for top ranks
     expect(fused30[0]!.score).toBeGreaterThan(fused60[0]!.score);
+  });
+});
+
+// =============================================================================
+// Reindex Collection Tests
+// =============================================================================
+
+describe("Reindex Collection", () => {
+  test("preserves document id and embeddings when file path changes only by case", async () => {
+    const store = await createTestStore();
+    const collectionName = "docs";
+    const collectionPath = join(testDir, `case-rename-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(collectionPath, { recursive: true });
+
+    const originalPath = join(collectionPath, "README.md");
+    const renamedPath = join(collectionPath, "readme.md");
+    const body = "# Case Rename\n\nContent that should keep the same embedding.";
+    await writeFile(originalPath, body);
+
+    const firstResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    expect(firstResult.indexed).toBe(1);
+
+    const before = store.db.prepare(`
+      SELECT id, path, hash FROM documents
+      WHERE collection = ? AND active = 1
+    `).get(collectionName) as { id: number; path: string; hash: string };
+    expect(before.path).toBe("README.md");
+
+    store.db.prepare(`
+      INSERT INTO content_vectors (hash, seq, pos, model, embedded_at)
+      VALUES (?, 0, 0, 'test-model', ?)
+    `).run(before.hash, new Date().toISOString());
+
+    await rename(originalPath, renamedPath);
+
+    const secondResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    expect(secondResult.indexed).toBe(0);
+    expect(secondResult.unchanged).toBe(1);
+    expect(secondResult.removed).toBe(0);
+
+    const afterRows = store.db.prepare(`
+      SELECT id, path, hash, active FROM documents
+      WHERE collection = ?
+      ORDER BY id
+    `).all(collectionName) as { id: number; path: string; hash: string; active: number }[];
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0]).toMatchObject({ id: before.id, path: "readme.md", hash: before.hash, active: 1 });
+
+    const vectorCount = store.db.prepare(`
+      SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ?
+    `).get(before.hash) as { count: number };
+    expect(vectorCount.count).toBe(1);
+
+    const ftsRows = store.db.prepare(`
+      SELECT rowid, filepath FROM documents_fts WHERE rowid = ?
+    `).all(before.id) as { rowid: number; filepath: string }[];
+    expect(ftsRows).toEqual([{ rowid: before.id, filepath: "docs/readme.md" }]);
+
+    await cleanupTestDb(store);
   });
 });
 
