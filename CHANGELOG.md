@@ -24,6 +24,9 @@
 - Store: keep content rows referenced by inactive documents during orphan
   cleanup so `qmd update` preserves soft-deleted tombstones for removed
   files. #585
+- Packaging: install AST grammar WASM packages as required dependencies so
+  Bun global installs include TypeScript/TSX/JavaScript grammars, and add a
+  `smoke:package-grammars` verification command. #595
 
 ## [2.1.0] - 2026-04-05
 
