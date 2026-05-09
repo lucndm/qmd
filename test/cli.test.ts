@@ -1567,7 +1567,7 @@ describe("mcp http daemon", () => {
       const res = await fetch(`http://localhost:${port}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ searches: [{ type: "lex", query: "authentication" }], limit: 5 }),
+        body: JSON.stringify({ searches: [{ type: "lex", query: "authentication" }], limit: 5, rerank: false }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();

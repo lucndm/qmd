@@ -693,6 +693,7 @@ export async function startMcpHttpServer(
           limit: params.limit ?? 10,
           minScore: params.minScore ?? 0,
           intent: params.intent,
+          rerank: params.rerank,
         });
 
         // Use first lex or vec query for snippet extraction
