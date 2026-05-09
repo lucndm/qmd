@@ -3,7 +3,7 @@ import type { Database } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
-import { dirname, join as pathJoin, relative as relativePath } from "path";
+import { dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
 import { readFileSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync } from "fs";
 import { createInterface } from "readline/promises";
@@ -173,9 +173,7 @@ function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths
   if (name && name.includes('/')) {
-    const { resolve } = require('path');
-    const { cwd } = require('process');
-    const absolutePath = resolve(cwd(), name);
+    const absolutePath = pathResolve(process.cwd(), name);
     // Replace path separators with underscores to create a valid filename
     normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
   }
@@ -1681,10 +1679,14 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   throw new Error(`--chunk-strategy must be "auto" or "regex" (got "${s}")`);
 }
 
+export function resolveEmbedModelForCli(): string {
+  return process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL_URI;
+}
+
 async function vectorIndex(
-  model: string = DEFAULT_EMBED_MODEL_URI,
+  model: string = resolveEmbedModelForCli(),
   force: boolean = false,
-  batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy },
+  batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string },
 ): Promise<void> {
   const storeInstance = getStore();
   const db = storeInstance.db;
@@ -1694,7 +1696,7 @@ async function vectorIndex(
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db);
+  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection);
   if (hashesToEmbed === 0 && !force) {
     console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
     closeDb();
@@ -1715,6 +1717,7 @@ async function vectorIndex(
   const result = await generateEmbeddings(storeInstance, {
     force,
     model,
+    collection: batchOptions?.collection,
     maxDocsPerBatch: batchOptions?.maxDocsPerBatch,
     maxBatchBytes: batchOptions?.maxBatchBytes,
     chunkStrategy: batchOptions?.chunkStrategy,
@@ -2727,7 +2730,7 @@ function showHelp(): void {
   console.log("Maintenance:");
   console.log("  qmd status                    - View index + collection health");
   console.log("  qmd update [--pull]           - Re-index collections (optionally git pull first)");
-  console.log("  qmd embed [-f]                - Generate/refresh vector embeddings");
+  console.log("  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings");
   console.log("    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch");
   console.log("    --max-batch-mb <n>          - Cap UTF-8 MB loaded into memory per embedding batch");
   console.log("  qmd cleanup                   - Clear caches, vacuum DB");
@@ -3120,10 +3123,17 @@ if (isMain) {
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
-        await vectorIndex(DEFAULT_EMBED_MODEL_URI, !!cli.values.force, {
+        // Validate -c against configured collections before dispatching, so a
+        // typo errors with "Collection not found: X" instead of silently
+        // reporting success because no pending docs match a nonexistent name.
+        // embed operates on a single collection; only the first value is used.
+        const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
+        const embedCollection = embedValidatedCollections[0];
+        await vectorIndex(resolveEmbedModelForCli(), !!cli.values.force, {
           maxDocsPerBatch,
           maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
           chunkStrategy: embedChunkStrategy,
+          collection: embedCollection,
         });
       } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
@@ -3247,9 +3257,10 @@ if (isMain) {
           const logPath = resolve(cacheDir, "mcp.log");
           const logFd = openSync(logPath, "w"); // truncate — fresh log per daemon run
           const selfPath = fileURLToPath(import.meta.url);
+          const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
           const spawnArgs = selfPath.endsWith(".ts")
-            ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, "mcp", "--http", "--port", String(port)]
-            : [selfPath, "mcp", "--http", "--port", String(port)];
+            ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port)]
+            : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port)];
           const child = nodeSpawn(process.execPath, spawnArgs, {
             stdio: ["ignore", logFd, logFd],
             detached: true,
@@ -3269,7 +3280,7 @@ if (isMain) {
         process.removeAllListeners("SIGINT");
         const { startMcpHttpServer } = await import("../mcp/server.js");
         try {
-          await startMcpHttpServer(port);
+          await startMcpHttpServer(port, { dbPath: getDbPath() });
         } catch (e: any) {
           if (e?.code === "EADDRINUSE") {
             console.error(`Port ${port} already in use. Try a different port with --port.`);
@@ -3280,7 +3291,7 @@ if (isMain) {
       } else {
         // Default: stdio transport
         const { startMcpServer } = await import("../mcp/server.js");
-        await startMcpServer();
+        await startMcpServer({ dbPath: getDbPath() });
       }
       break;
     }

@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { unlink, mkdtemp, rmdir, writeFile } from "node:fs/promises";
+import { unlink, mkdtemp, rmdir, writeFile, rm, mkdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
@@ -46,13 +46,22 @@ import {
   normalizeDocid,
   isDocid,
   syncConfigToDb,
+  reindexCollection,
   STRONG_SIGNAL_MIN_SCORE,
   STRONG_SIGNAL_MIN_GAP,
+  insertContent,
+  insertDocument,
   generateEmbeddings,
+  getHybridRrfWeights,
+  _resetProductionModeForTesting,
+  hybridQuery,
+  structuredSearch,
+  vectorSearchQuery,
   type Store,
   type DocumentResult,
   type SearchResult,
   type RankedResult,
+  type RankedListMeta,
 } from "../src/store.js";
 import type { CollectionConfig } from "../src/collections.js";
 
@@ -156,18 +165,18 @@ async function insertTestDocument(
   const hash = opts.hash || await hashContent(body);
 
   // Insert content (with OR IGNORE for deduplication)
-  db.prepare(`
-    INSERT OR IGNORE INTO content (hash, doc, created_at)
-    VALUES (?, ?, ?)
-  `).run(hash, body, now);
+  insertContent(db, hash, body, now);
 
-  // Insert document
-  const result = db.prepare(`
-    INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(collectionName, path, title, hash, now, now, active);
+  insertDocument(db, collectionName, path, title, hash, now, now);
+  const row = db.prepare(`
+    SELECT id FROM documents WHERE collection = ? AND path = ?
+  `).get(collectionName, path) as { id: number } | undefined;
 
-  return Number(result.lastInsertRowid);
+  if (active === 0 && row) {
+    db.prepare(`UPDATE documents SET active = 0 WHERE id = ?`).run(row.id);
+  }
+
+  return row?.id ?? 0;
 }
 
 /** Sync YAML config file to SQLite store_collections in the current test store */
@@ -277,7 +286,9 @@ afterAll(async () => {
 
 describe("Store Creation", () => {
   test("createStore throws without explicit path in test mode", () => {
-    // In test mode, createStore without path should throw to prevent accidental writes
+    // In test mode, createStore without path should throw to prevent accidental writes.
+    // Other tests may enable production mode in the same Bun process, so reset first.
+    _resetProductionModeForTesting();
     const originalIndexPath = process.env.INDEX_PATH;
     delete process.env.INDEX_PATH;
 
@@ -1250,6 +1261,61 @@ describe("FTS Search", () => {
     await cleanupTestDb(store);
   });
 
+  test("searchFTS finds CJK documents by exact and mixed queries", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+
+    await insertTestDocument(store.db, collectionName, {
+      name: "zh",
+      title: "中文检索说明",
+      body: "这里介绍 vector 数据库和关键词检索。",
+      displayPath: "cjk/zh.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "ja",
+      title: "日本語検索メモ",
+      body: "この文書は検索品質とトークン化について説明します。",
+      displayPath: "cjk/ja.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko",
+      title: "한국어 검색 노트",
+      body: "이 문서는 검색 품질과 토큰화 문제를 설명합니다.",
+      displayPath: "cjk/ko.md",
+    });
+
+    expect(store.searchFTS("关键词检索", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
+    expect(store.searchFTS("検索品質", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ja.md`);
+    expect(store.searchFTS("검색 품질", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ko.md`);
+    expect(store.searchFTS("vector 关键词", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
+
+    await cleanupTestDb(store);
+  });
+
+  test("searchFTS keeps English behavior while indexing CJK text", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+
+    await insertTestDocument(store.db, collectionName, {
+      name: "english",
+      title: "Vector Search Notes",
+      body: "The quick brown fox explains vector search and BM25 ranking.",
+      displayPath: "english.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "zh",
+      title: "中文检索说明",
+      body: "这里介绍向量数据库和关键词检索。",
+      displayPath: "zh.md",
+    });
+
+    const foxResults = store.searchFTS("quick fox", 10);
+    expect(foxResults.map(r => r.displayPath)).toContain(`${collectionName}/english.md`);
+    expect(foxResults.map(r => r.displayPath)).not.toContain(`${collectionName}/zh.md`);
+
+    await cleanupTestDb(store);
+  });
+
   test("searchFTS handles special characters in query", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -1988,6 +2054,38 @@ describe("Reciprocal Rank Fusion", () => {
     expect(fused[0]!.file).toBe("doc1");
   });
 
+  test("hybrid RRF weights boost original vector evidence over expansion-only hits", () => {
+    const originalFtsOnly = makeResult("original-fts-only.md", 0.95);
+    const expansionOnly = makeResult("lex-expansion-only.md", 0.95);
+    const originalVector = makeResult("original-vector.md", 0.95);
+
+    // Mirrors hybridQuery's common list order when a lex expansion exists:
+    // original FTS, lex expansion FTS, original vector.
+    const rankedLists = [
+      [originalFtsOnly],
+      [expansionOnly],
+      [originalVector],
+    ];
+    const rankedListMeta: RankedListMeta[] = [
+      { source: "fts", queryType: "original", query: "user query" },
+      { source: "fts", queryType: "lex", query: "lex expansion" },
+      { source: "vec", queryType: "original", query: "user query" },
+    ];
+
+    const positionBasedWeights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
+    const buggyOrder = reciprocalRankFusion(rankedLists, positionBasedWeights);
+
+    expect(buggyOrder.findIndex(r => r.file === "lex-expansion-only.md"))
+      .toBeLessThan(buggyOrder.findIndex(r => r.file === "original-vector.md"));
+
+    const semanticWeights = getHybridRrfWeights(rankedListMeta);
+    const fixedOrder = reciprocalRankFusion(rankedLists, semanticWeights);
+
+    expect(semanticWeights).toEqual([2.0, 1.0, 2.0]);
+    expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
+      .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
+  });
+
   test("RRF adds top-rank bonus", () => {
     // doc1 is #1 in list1, doc2 is #2 in list1
     const list1 = [makeResult("doc1", 0.9), makeResult("doc2", 0.8)];
@@ -2017,6 +2115,65 @@ describe("Reciprocal Rank Fusion", () => {
 
     // Lower k = higher scores for top ranks
     expect(fused30[0]!.score).toBeGreaterThan(fused60[0]!.score);
+  });
+});
+
+// =============================================================================
+// Reindex Collection Tests
+// =============================================================================
+
+describe("Reindex Collection", () => {
+  test("preserves document id and embeddings when file path changes only by case", async () => {
+    const store = await createTestStore();
+    const collectionName = "docs";
+    const collectionPath = join(testDir, `case-rename-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(collectionPath, { recursive: true });
+
+    const originalPath = join(collectionPath, "README.md");
+    const renamedPath = join(collectionPath, "readme.md");
+    const body = "# Case Rename\n\nContent that should keep the same embedding.";
+    await writeFile(originalPath, body);
+
+    const firstResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    expect(firstResult.indexed).toBe(1);
+
+    const before = store.db.prepare(`
+      SELECT id, path, hash FROM documents
+      WHERE collection = ? AND active = 1
+    `).get(collectionName) as { id: number; path: string; hash: string };
+    expect(before.path).toBe("README.md");
+
+    store.db.prepare(`
+      INSERT INTO content_vectors (hash, seq, pos, model, embedded_at)
+      VALUES (?, 0, 0, 'test-model', ?)
+    `).run(before.hash, new Date().toISOString());
+
+    await rename(originalPath, renamedPath);
+
+    const secondResult = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
+    expect(secondResult.indexed).toBe(0);
+    expect(secondResult.unchanged).toBe(1);
+    expect(secondResult.removed).toBe(0);
+
+    const afterRows = store.db.prepare(`
+      SELECT id, path, hash, active FROM documents
+      WHERE collection = ?
+      ORDER BY id
+    `).all(collectionName) as { id: number; path: string; hash: string; active: number }[];
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0]).toMatchObject({ id: before.id, path: "readme.md", hash: before.hash, active: 1 });
+
+    const vectorCount = store.db.prepare(`
+      SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ?
+    `).get(before.hash) as { count: number };
+    expect(vectorCount.count).toBe(1);
+
+    const ftsRows = store.db.prepare(`
+      SELECT rowid, filepath FROM documents_fts WHERE rowid = ?
+    `).all(before.id) as { rowid: number; filepath: string }[];
+    expect(ftsRows).toEqual([{ rowid: before.id, filepath: "docs/readme.md" }]);
+
+    await cleanupTestDb(store);
   });
 });
 
@@ -2256,6 +2413,33 @@ describe("Vector Table", () => {
 
     await cleanupTestDb(store);
   });
+
+  test("insertEmbedding is idempotent for an existing vec0 hash_seq (#598)", async () => {
+    const store = await createTestStore();
+    store.ensureVecTable(2);
+
+    const hash = "existinghashseq";
+    const first = new Float32Array([0.1, 0.2]);
+    const second = new Float32Array([0.3, 0.4]);
+    const now = new Date().toISOString();
+
+    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, first);
+
+    // Reproduces sqlite-vec's broken conflict handling: vec0 does not honor OR REPLACE.
+    expect(() => {
+      store.db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, second);
+    }).toThrow(/UNIQUE constraint failed/i);
+
+    // QMD must therefore use DELETE + INSERT when upserting the vector row.
+    expect(() => store.insertEmbedding(hash, 0, 0, second, "test-model", now)).not.toThrow();
+
+    const vectorCount = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`${hash}_0`) as { count: number };
+    const metadataCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get(hash) as { count: number };
+    expect(vectorCount.count).toBe(1);
+    expect(metadataCount.count).toBe(1);
+
+    await cleanupTestDb(store);
+  });
 });
 
 // =============================================================================
@@ -2263,6 +2447,47 @@ describe("Vector Table", () => {
 // =============================================================================
 
 describe("Integration", () => {
+  test("reindexCollection soft-deletes removed files and preserves inactive content (#585)", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "orphan-regression-"));
+    const collectionName = "orphan-regression";
+
+    try {
+      for (let i = 1; i <= 5; i++) {
+        await writeFile(join(collectionDir, `doc-${i}.md`), `# Doc ${i}\n\nUnique body ${i}`);
+      }
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      const initial = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(initial.indexed).toBe(5);
+      expect(initial.removed).toBe(0);
+
+      await rm(join(collectionDir, "doc-3.md"));
+      await rm(join(collectionDir, "doc-4.md"));
+      await rm(join(collectionDir, "doc-5.md"));
+
+      const afterDelete = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterDelete.removed).toBe(3);
+
+      const counts = store.db.prepare(`
+        SELECT
+          SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive,
+          COUNT(*) AS total
+        FROM documents
+        WHERE collection = ?
+      `).get(collectionName) as { active: number; inactive: number; total: number };
+      const contentCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content`).get() as { count: number };
+
+      expect(counts).toEqual({ active: 2, inactive: 3, total: 5 });
+      expect(contentCount.count).toBe(5);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
   test("full document lifecycle: create, search, retrieve", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection({ pwd: "/test/notes", glob: "**/*.md" });
@@ -2798,6 +3023,116 @@ describe("Embedding batching", () => {
       expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
     } finally {
       setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings uses the active llm embed model when no explicit model is passed", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = createFakeEmbedLlm();
+    const model = "hf:env/embed-model.gguf";
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = { ...fakeLlm, embedModelName: model } as any;
+
+    try {
+      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
+
+      const result = await generateEmbeddings(store);
+
+      expect(result.chunksEmbedded).toBe(1);
+      expect(fakeLlm.embedCalls[0]?.options?.model).toBe(model);
+      expect(fakeLlm.embedBatchModelCalls).toEqual([{ model }]);
+      expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("vectorSearchQuery uses the active llm embed model for vector lookups", async () => {
+    const store = await createTestStore();
+    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
+
+    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.llm = { embedModelName: model } as any;
+    store.searchVec = searchVecSpy as any;
+    store.expandQuery = vi.fn(async () => []) as any;
+
+    try {
+      await vectorSearchQuery(store, "custom query", { limit: 7, minScore: 0 });
+
+      expect(searchVecSpy).toHaveBeenCalledTimes(1);
+      expect(searchVecSpy.mock.calls[0]?.[0]).toBe("custom query");
+      expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
+      expect(searchVecSpy.mock.calls[0]?.[2]).toBe(7);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("hybridQuery uses the active llm embed model for precomputed vector lookups", async () => {
+    const store = await createTestStore();
+    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const embedBatchSpy = vi.fn(async (texts: string[]) => texts.map(() => ({
+      embedding: [1, 2, 3],
+      model,
+    })));
+    const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
+
+    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.llm = {
+      embedModelName: model,
+      embedBatch: embedBatchSpy,
+    } as any;
+    store.searchVec = searchVecSpy as any;
+    store.searchFTS = vi.fn(() => []) as any;
+    store.expandQuery = vi.fn(async () => []) as any;
+
+    try {
+      await hybridQuery(store, "hybrid query", { limit: 5, minScore: 0, skipRerank: true });
+
+      expect(embedBatchSpy).toHaveBeenCalledTimes(1);
+      expect(searchVecSpy).toHaveBeenCalledTimes(1);
+      expect(searchVecSpy.mock.calls[0]?.[0]).toBe("hybrid query");
+      expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
+      expect(searchVecSpy.mock.calls[0]?.[5]).toEqual([1, 2, 3]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch uses the active llm embed model for precomputed vector lookups", async () => {
+    const store = await createTestStore();
+    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const embedBatchSpy = vi.fn(async (texts: string[]) => texts.map(() => ({
+      embedding: [1, 2, 3],
+      model,
+    })));
+    const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
+
+    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    store.llm = {
+      embedModelName: model,
+      embedBatch: embedBatchSpy,
+    } as any;
+    store.searchVec = searchVecSpy as any;
+
+    try {
+      await structuredSearch(store, [{ type: "vec", query: "structured query" }], {
+        limit: 5,
+        minScore: 0,
+        skipRerank: true,
+      });
+
+      expect(embedBatchSpy).toHaveBeenCalledTimes(1);
+      expect(searchVecSpy).toHaveBeenCalledTimes(1);
+      expect(searchVecSpy.mock.calls[0]?.[0]).toBe("structured query");
+      expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
+      expect(searchVecSpy.mock.calls[0]?.[5]).toEqual([1, 2, 3]);
+    } finally {
       await cleanupTestDb(store);
     }
   });

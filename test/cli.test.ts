@@ -6,14 +6,15 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir } from "fs/promises";
+import { chmod, copyFile, mkdtemp, rm, writeFile, mkdir } from "fs/promises";
 import { existsSync, lstatSync, readFileSync, symlinkSync, writeFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
-import { buildEditorUri, termLink } from "../src/cli/qmd.ts";
+import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
+import { DEFAULT_EMBED_MODEL_URI } from "../src/llm.ts";
 
 // Test fixtures directory and database path
 let testDir: string;
@@ -243,6 +244,30 @@ describe("CLI Help", () => {
 });
 
 describe("CLI Embed", () => {
+  test("prefers QMD_EMBED_MODEL for qmd embed", () => {
+    const prev = process.env.QMD_EMBED_MODEL;
+    process.env.QMD_EMBED_MODEL = "hf:env/embed-model.gguf";
+
+    try {
+      expect(resolveEmbedModelForCli()).toBe("hf:env/embed-model.gguf");
+    } finally {
+      if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
+      else process.env.QMD_EMBED_MODEL = prev;
+    }
+  });
+
+  test("falls back to the default embed model when QMD_EMBED_MODEL is unset", () => {
+    const prev = process.env.QMD_EMBED_MODEL;
+    delete process.env.QMD_EMBED_MODEL;
+
+    try {
+      expect(resolveEmbedModelForCli()).toBe(DEFAULT_EMBED_MODEL_URI);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
+      else process.env.QMD_EMBED_MODEL = prev;
+    }
+  });
+
   test("rejects invalid --max-docs-per-batch", async () => {
     const { stderr, exitCode } = await runQmd(["embed", "--max-docs-per-batch", "0"]);
     expect(exitCode).toBe(1);
@@ -1403,13 +1428,18 @@ describe("mcp http daemon", () => {
   }
 
   /** Spawn a foreground HTTP server (non-blocking) and return the process */
-  function spawnHttpServer(port: number): import("child_process").ChildProcess {
-    const proc = spawn(tsxBin, [qmdScript, "mcp", "--http", "--port", String(port)], {
+  function spawnHttpServer(
+    port: number,
+    options: { args?: string[]; env?: Record<string, string> } = {},
+  ): import("child_process").ChildProcess {
+    const proc = spawn(tsxBin, [qmdScript, ...(options.args ?? []), "mcp", "--http", "--port", String(port)], {
       cwd: fixturesDir,
       env: {
         ...process.env,
         INDEX_PATH: daemonDbPath,
         QMD_CONFIG_DIR: daemonConfigDir,
+        PWD: fixturesDir,
+        ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1481,10 +1511,74 @@ describe("mcp http daemon", () => {
       const body = await res.json();
       expect(body.status).toBe("ok");
     } finally {
+      const closed = new Promise(r => proc.once("close", r));
       proc.kill("SIGTERM");
-      await new Promise(r => proc.on("close", r));
+      await closed;
     }
   });
+
+  test("foreground HTTP server honors --index when selecting the store", async () => {
+    const customIndex = "mcp-alt-index";
+    const customCacheDir = join(daemonTestDir, `cache-index-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const customConfigDir = join(daemonTestDir, `config-index-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(customCacheDir, { recursive: true });
+    await mkdir(customConfigDir, { recursive: true });
+
+    const addResult = await runQmd(
+      ["--index", customIndex, "collection", "add", fixturesDir, "--name", "mcp-fixtures"],
+      {
+        dbPath: daemonDbPath,
+        configDir: customConfigDir,
+        env: {
+          INDEX_PATH: "",
+          XDG_CACHE_HOME: customCacheDir,
+        },
+      },
+    );
+    expect(addResult.exitCode).toBe(0);
+
+    const updateResult = await runQmd(
+      ["--index", customIndex, "update"],
+      {
+        dbPath: daemonDbPath,
+        configDir: customConfigDir,
+        env: {
+          INDEX_PATH: "",
+          XDG_CACHE_HOME: customCacheDir,
+        },
+      },
+    );
+    expect(updateResult.exitCode).toBe(0);
+
+    const port = randomPort();
+    const proc = spawnHttpServer(port, {
+      args: ["--index", customIndex],
+      env: {
+        INDEX_PATH: "",
+        XDG_CACHE_HOME: customCacheDir,
+        QMD_CONFIG_DIR: customConfigDir,
+      },
+    });
+
+    try {
+      const ready = await waitForServer(port);
+      expect(ready).toBe(true);
+
+      const res = await fetch(`http://localhost:${port}/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ searches: [{ type: "lex", query: "authentication" }], limit: 5, rerank: false }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const files = body.results.map((r: { file: string }) => r.file);
+      expect(files.some((file: string) => file.includes("mcp-fixtures/notes/meeting.md"))).toBe(true);
+    } finally {
+      const closed = new Promise(r => proc.once("close", r));
+      proc.kill("SIGTERM");
+      await closed;
+    }
+  }, 10000);
 
   // -------------------------------------------------------------------------
   // Daemon lifecycle
@@ -1599,5 +1693,69 @@ describe("mcp http daemon", () => {
     process.kill(pid, "SIGTERM");
     await sleep(500);
     try { unlinkSync(pidPath()); } catch {}
+  });
+});
+
+// =============================================================================
+// MCP stdio stdout hygiene
+// =============================================================================
+
+describe("mcp stdio launcher", () => {
+  test("sets native llama/ggml quiet env before Node starts so stdout stays JSON-RPC only", async () => {
+    const tempPackage = await mkdtemp(join(tmpdir(), "qmd-bin-mcp-"));
+    try {
+      await mkdir(join(tempPackage, "bin"), { recursive: true });
+      await mkdir(join(tempPackage, "dist", "cli"), { recursive: true });
+      await mkdir(join(tempPackage, "fake-bin"), { recursive: true });
+
+      const qmdBin = join(tempPackage, "bin", "qmd");
+      await copyFile(join(projectRoot, "bin", "qmd"), qmdBin);
+      await chmod(qmdBin, 0o755);
+
+      // Force the wrapper down the Node branch, then put our fake `node` first
+      // in PATH. The fake node behaves like the native llama/ggml layer: it
+      // writes a non-JSON stdout line unless qmd pre-seeded the documented
+      // quiet env vars before launching JS.
+      await writeFile(join(tempPackage, "package-lock.json"), "{}\n");
+      const fakeNode = join(tempPackage, "fake-bin", "node");
+      await writeFile(fakeNode, `#!/bin/sh
+if [ "\${GGML_BACKEND_SILENT:-}" != "1" ]; then
+  printf 'llama.cpp native log on stdout\\n'
+fi
+printf '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\\n'
+`);
+      await chmod(fakeNode, 0o755);
+
+      const proc = spawn(qmdBin, ["mcp"], {
+        cwd: tempPackage,
+        env: {
+          ...process.env,
+          PATH: `${join(tempPackage, "fake-bin")}:${process.env.PATH}`,
+          LLAMA_LOG_LEVEL: "",
+          GGML_LOG_LEVEL: "",
+          GGML_BACKEND_SILENT: "",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+      proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+      proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        proc.once("error", reject);
+        proc.on("close", (code) => resolve(code ?? 1));
+      });
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    } finally {
+      await rm(tempPackage, { recursive: true, force: true });
+    }
   });
 });

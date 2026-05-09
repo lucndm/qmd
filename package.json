@@ -17,6 +17,7 @@
   "files": [
     "bin/",
     "dist/",
+    "scripts/check-package-grammars.mjs",
     "LICENSE",
     "CHANGELOG.md"
   ],
@@ -31,7 +32,8 @@
     "vsearch": "tsx src/cli/qmd.ts vsearch",
     "rerank": "tsx src/cli/qmd.ts rerank",
     "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
-    "release": "./scripts/release.sh"
+    "release": "./scripts/release.sh",
+    "smoke:package-grammars": "node scripts/check-package-grammars.mjs"
   },
   "publishConfig": {
     "access": "public"
@@ -53,18 +55,18 @@
     "sqlite-vec": "0.1.9",
     "web-tree-sitter": "0.26.7",
     "yaml": "2.8.3",
-    "zod": "4.2.1"
+    "zod": "4.2.1",
+    "tree-sitter-go": "0.23.4",
+    "tree-sitter-python": "0.23.4",
+    "tree-sitter-rust": "0.24.0",
+    "tree-sitter-typescript": "0.23.2"
   },
   "optionalDependencies": {
     "sqlite-vec-darwin-arm64": "0.1.9",
     "sqlite-vec-darwin-x64": "0.1.9",
     "sqlite-vec-linux-arm64": "0.1.9",
     "sqlite-vec-linux-x64": "0.1.9",
-    "sqlite-vec-windows-x64": "0.1.9",
-    "tree-sitter-go": "0.23.4",
-    "tree-sitter-python": "0.23.4",
-    "tree-sitter-rust": "0.24.0",
-    "tree-sitter-typescript": "0.23.2"
+    "sqlite-vec-windows-x64": "0.1.9"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",

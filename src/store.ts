@@ -18,6 +18,7 @@ import { createHash } from "crypto";
 import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
+import { qmdHomedir } from "./paths.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -38,7 +39,6 @@ import type {
 // Configuration
 // =============================================================================
 
-const HOME = process.env.HOME || process.env.USERPROFILE || "/tmp";
 export const DEFAULT_EMBED_MODEL = "embeddinggemma";
 export const DEFAULT_RERANK_MODEL = "ExpedientFalcon/qwen3-reranker:0.6b-q8_0";
 export const DEFAULT_QUERY_MODEL = "Qwen/Qwen3-1.7B";
@@ -334,7 +334,7 @@ export type ExpandedQuery = {
 // =============================================================================
 
 export function homedir(): string {
-  return HOME;
+  return qmdHomedir();
 }
 
 /**
@@ -733,6 +733,73 @@ export function verifySqliteVecLoaded(db: Database): void {
 
 let _sqliteVecAvailable: boolean | null = null;
 
+const CJK_CHAR_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const CJK_RUN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const FTS_CJK_NORMALIZED_VERSION = "1";
+
+/**
+ * FTS5's unicode61 tokenizer does not segment CJK text into searchable words.
+ * Normalize CJK runs by spacing every character so exact CJK queries can be
+ * translated into phrase queries while Latin text keeps the default tokenizer.
+ */
+export function normalizeCjkForFTS(text: string): string {
+  return text.replace(CJK_RUN_PATTERN, run => ` ${Array.from(run).join(' ')} `);
+}
+
+function containsCjk(text: string): boolean {
+  return CJK_CHAR_PATTERN.test(text);
+}
+
+function sanitizeFTS5Phrase(phrase: string): string {
+  return normalizeCjkForFTS(phrase)
+    .split(/\s+/)
+    .map(t => sanitizeFTS5Term(t))
+    .filter(t => t)
+    .join(' ');
+}
+
+function rebuildFTSForCjkNormalization(db: Database): void {
+  const version = db.prepare(`SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`).get() as { value?: string } | undefined;
+  if (version?.value === FTS_CJK_NORMALIZED_VERSION) return;
+
+  try {
+    db.exec(`DELETE FROM documents_fts WHERE rowid >= 0`);
+  } catch {
+    // Some older/corrupt FTS5 shadow-table states can reject bulk deletes even
+    // though reads still work. Recreate the virtual table; documents_fts is a
+    // derived index, so rebuilding it from documents/content is safe.
+    db.exec(`DROP TABLE IF EXISTS documents_fts`);
+    db.exec(`
+      CREATE VIRTUAL TABLE documents_fts USING fts5(
+        filepath, title, body,
+        tokenize='porter unicode61'
+      )
+    `);
+  }
+  const rows = db.prepare(`
+    SELECT d.id, d.collection, d.path, d.title, content.doc as body
+    FROM documents d
+    JOIN content ON content.hash = d.hash
+    WHERE d.active = 1
+  `).all() as { id: number; collection: string; path: string; title: string; body: string }[];
+  const insert = db.prepare(`INSERT INTO documents_fts(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`);
+  const rebuild = db.transaction(() => {
+    for (const row of rows) {
+      insert.run(
+        row.id,
+        normalizeCjkForFTS(`${row.collection}/${row.path}`),
+        normalizeCjkForFTS(row.title),
+        normalizeCjkForFTS(row.body)
+      );
+    }
+  });
+  rebuild();
+  db.prepare(`
+    INSERT OR REPLACE INTO store_config(key, value)
+    VALUES ('fts_cjk_normalized_version', ?)
+  `).run(FTS_CJK_NORMALIZED_VERSION);
+}
+
 function initializeDatabase(db: Database): void {
   try {
     loadSqliteVec(db);
@@ -838,9 +905,12 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
-  // Triggers to keep FTS in sync
+  // Triggers keep FTS in sync for callers that write directly to documents.
+  // Production indexing paths rebuild entries in TypeScript so CJK text can be
+  // normalized before it reaches the unicode61 tokenizer.
+  db.exec(`DROP TRIGGER IF EXISTS documents_ai`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents
+    CREATE TRIGGER documents_ai AFTER INSERT ON documents
     WHEN new.active = 1
     BEGIN
       INSERT INTO documents_fts(rowid, filepath, title, body)
@@ -853,14 +923,16 @@ function initializeDatabase(db: Database): void {
     END
   `);
 
+  db.exec(`DROP TRIGGER IF EXISTS documents_ad`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN
       DELETE FROM documents_fts WHERE rowid = old.id;
     END
   `);
 
+  db.exec(`DROP TRIGGER IF EXISTS documents_au`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents
+    CREATE TRIGGER documents_au AFTER UPDATE ON documents
     BEGIN
       -- Delete from FTS if no longer active
       DELETE FROM documents_fts WHERE rowid = old.id AND new.active = 0;
@@ -875,6 +947,8 @@ function initializeDatabase(db: Database): void {
       WHERE new.active = 1;
     END
   `);
+
+  rebuildFTSForCjkNormalization(db);
 }
 
 // =============================================================================
@@ -1300,6 +1374,11 @@ export type EmbedResult = {
 export type EmbedOptions = {
   force?: boolean;
   model?: string;
+  /**
+   * Restrict embedding to documents in a single collection.
+   * When omitted, all pending documents across every collection are embedded.
+   */
+  collection?: string;
   maxDocsPerBatch?: number;
   maxBatchBytes?: number;
   chunkStrategy?: ChunkStrategy;
@@ -1341,16 +1420,18 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
   };
 }
 
-function getPendingEmbeddingDocs(db: Database): PendingEmbeddingDoc[] {
-  return db.prepare(`
+function getPendingEmbeddingDocs(db: Database, collection?: string): PendingEmbeddingDoc[] {
+  const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  const stmt = db.prepare(`
     SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
     FROM documents d
     JOIN content c ON d.hash = c.hash
     LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
+    WHERE d.active = 1 AND v.hash IS NULL ${collectionFilter}
     GROUP BY d.hash
     ORDER BY MIN(d.path)
-  `).all() as PendingEmbeddingDoc[];
+  `);
+  return (collection ? stmt.all(collection) : stmt.all()) as PendingEmbeddingDoc[];
 }
 
 function buildEmbeddingBatches(
@@ -1411,16 +1492,17 @@ export async function generateEmbeddings(
   options?: EmbedOptions
 ): Promise<EmbedResult> {
   const db = store.db;
-  const model = options?.model ?? DEFAULT_EMBED_MODEL;
+  const llm = getLlm(store);
+  const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
 
   if (options?.force) {
-    clearAllEmbeddings(db);
+    clearAllEmbeddings(db, options?.collection);
   }
 
-  const docsToEmbed = getPendingEmbeddingDocs(db);
+  const docsToEmbed = getPendingEmbeddingDocs(db, options?.collection);
 
   if (docsToEmbed.length === 0) {
     return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
@@ -1430,8 +1512,7 @@ export async function generateEmbeddings(
   const startTime = Date.now();
 
   // Use store's LlamaCpp or global singleton, wrapped in a session
-  const llm = getLlm(store);
-  const embedModelUri = llm.embedModelName;
+  const embedModelUri = model;
 
   // Create a session manager for this llm instance
   const result = await withLLMSessionForLlm(llm, async (session) => {
@@ -1868,13 +1949,15 @@ export type IndexStatus = {
 // Index health
 // =============================================================================
 
-export function getHashesNeedingEmbedding(db: Database): number {
-  const result = db.prepare(`
+export function getHashesNeedingEmbedding(db: Database, collection?: string): number {
+  const collectionFilter = collection ? `AND d.collection = ?` : ``;
+  const stmt = db.prepare(`
     SELECT COUNT(DISTINCT d.hash) as count
     FROM documents d
     LEFT JOIN content_vectors v ON d.hash = v.hash AND v.seq = 0
-    WHERE d.active = 1 AND v.hash IS NULL
-  `).get() as { count: number };
+    WHERE d.active = 1 AND v.hash IS NULL ${collectionFilter}
+  `);
+  const result = (collection ? stmt.get(collection) : stmt.get()) as { count: number };
   return result.count;
 }
 
@@ -1949,13 +2032,15 @@ export function deleteInactiveDocuments(db: Database): number {
 }
 
 /**
- * Remove orphaned content hashes that are not referenced by any active document.
+ * Remove orphaned content hashes that are not referenced by any document.
+ * Inactive documents are soft-deleted tombstones, so their content rows must
+ * remain referenced until deleteInactiveDocuments() hard-deletes them.
  * Returns the number of orphaned content hashes deleted.
  */
 export function cleanupOrphanedContent(db: Database): number {
   const result = db.prepare(`
     DELETE FROM content
-    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
+    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents)
   `).run();
   return result.changes;
 }
@@ -2077,6 +2162,28 @@ export function insertContent(db: Database, hash: string, content: string, creat
     .run(hash, content, createdAt);
 }
 
+function rebuildDocumentFTS(db: Database, documentId: number): void {
+  const row = db.prepare(`
+    SELECT d.id, d.collection, d.path, d.title, content.doc as body
+    FROM documents d
+    JOIN content ON content.hash = d.hash
+    WHERE d.id = ? AND d.active = 1
+  `).get(documentId) as { id: number; collection: string; path: string; title: string; body: string } | undefined;
+
+  db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(documentId);
+  if (!row) return;
+
+  db.prepare(`
+    INSERT INTO documents_fts(rowid, filepath, title, body)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    row.id,
+    normalizeCjkForFTS(`${row.collection}/${row.path}`),
+    normalizeCjkForFTS(row.title),
+    normalizeCjkForFTS(row.body)
+  );
+}
+
 /**
  * Insert a new document into the documents table.
  */
@@ -2098,6 +2205,9 @@ export function insertDocument(
       modified_at = excluded.modified_at,
       active = 1
   `).run(collectionName, path, title, hash, createdAt, modifiedAt);
+
+  const row = db.prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`).get(collectionName, path) as { id: number } | undefined;
+  if (row) rebuildDocumentFTS(db, row.id);
 }
 
 /**
@@ -2116,8 +2226,8 @@ export function findActiveDocument(
 }
 
 /**
- * Find an active document, falling back to a legacy lowercase path.
- * If found under the legacy path, renames it in-place and rebuilds the
+ * Find an active document, falling back to a case-insensitive path match.
+ * If found under a different casing, renames it in-place and rebuilds the
  * FTS entry. Embeddings are keyed by content hash, so the rename is
  * safe — no re-embedding required.
  *
@@ -2132,10 +2242,12 @@ export function findOrMigrateLegacyDocument(
   const existing = findActiveDocument(db, collectionName, path);
   if (existing) return existing;
 
-  const legacyPath = path.toLowerCase();
-  if (legacyPath === path) return null;
-
-  const legacy = findActiveDocument(db, collectionName, legacyPath);
+  const legacy = db.prepare(`
+    SELECT id, hash, title FROM documents
+    WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
+    ORDER BY id
+    LIMIT 1
+  `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
   if (!legacy) return null;
 
   // Wrap rename + FTS rebuild in a transaction for atomicity.
@@ -2148,15 +2260,7 @@ export function findOrMigrateLegacyDocument(
 
     if (result.changes === 0) return false;
 
-    // FTS5 does not reliably update via the documents_au trigger's
-    // INSERT OR REPLACE. Manually rebuild the FTS entry.
-    db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(legacy.id);
-    db.prepare(`
-      INSERT INTO documents_fts(rowid, filepath, title, body)
-      SELECT id, collection || '/' || path, title,
-             (SELECT doc FROM content WHERE hash = documents.hash)
-      FROM documents WHERE id = ?
-    `).run(legacy.id);
+    rebuildDocumentFTS(db, legacy.id);
 
     return true;
   });
@@ -2177,6 +2281,7 @@ export function updateDocumentTitle(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`)
     .run(title, modifiedAt, documentId);
+  rebuildDocumentFTS(db, documentId);
 }
 
 /**
@@ -2192,6 +2297,7 @@ export function updateDocument(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, hash = ?, modified_at = ? WHERE id = ?`)
     .run(title, hash, modifiedAt, documentId);
+  rebuildDocumentFTS(db, documentId);
 }
 
 /**
@@ -2940,7 +3046,7 @@ function buildFTS5Query(query: string): string | null {
       const phrase = s.slice(start, i).trim();
       i++; // skip closing quote
       if (phrase.length > 0) {
-        const sanitized = phrase.split(/\s+/).map(t => sanitizeFTS5Term(t)).filter(t => t).join(' ');
+        const sanitized = sanitizeFTS5Phrase(phrase);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // Exact phrase, no prefix match
           if (negated) {
@@ -2962,6 +3068,16 @@ function buildFTS5Query(query: string): string | null {
         const sanitized = sanitizeHyphenatedTerm(term);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)
+          if (negated) {
+            negative.push(ftsPhrase);
+          } else {
+            positive.push(ftsPhrase);
+          }
+        }
+      } else if (containsCjk(term)) {
+        const sanitized = sanitizeFTS5Phrase(term);
+        if (sanitized) {
+          const ftsPhrase = `"${sanitized}"`;  // CJK phrase over character tokens
           if (negated) {
             negative.push(ftsPhrase);
           } else {
@@ -3212,12 +3328,68 @@ export function getHashesForEmbedding(db: Database): { hash: string; body: strin
 }
 
 /**
- * Clear all embeddings from the database (force re-index).
- * Deletes all rows from content_vectors and drops the vectors_vec table.
+ * Clear embeddings for the whole index, or just for one collection.
+ *
+ * When `collection` is omitted the entire content_vectors table is emptied and
+ * the vectors_vec virtual table is dropped (it is recreated with the right
+ * dimensions on the next embed run).
+ *
+ * When `collection` is provided, only vectors whose hash is referenced
+ * exclusively by active documents in that collection are removed. Hashes
+ * shared with active documents in other collections are left in place so
+ * vector search keeps working there (content_vectors is keyed globally by
+ * content hash; identical document bodies across collections share a row).
+ * vectors_vec is preserved so other collections keep working unless the scoped
+ * clear empties content_vectors entirely, in which case it is dropped so the
+ * next embed can recreate the table with the current dimensions.
  */
-export function clearAllEmbeddings(db: Database): void {
-  db.exec(`DELETE FROM content_vectors`);
-  db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+export function clearAllEmbeddings(db: Database, collection?: string): void {
+  if (!collection) {
+    db.exec(`DELETE FROM content_vectors`);
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    return;
+  }
+
+  const exclusiveHashesQuery = `
+    SELECT DISTINCT d.hash
+    FROM documents d
+    WHERE d.collection = ? AND d.active = 1
+      AND NOT EXISTS (
+        SELECT 1 FROM documents d2
+        WHERE d2.hash = d.hash
+          AND d2.active = 1
+          AND d2.collection != d.collection
+      )
+  `;
+
+  const vecTableExists = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`)
+    .get();
+
+  if (vecTableExists) {
+    const hashSeqRows = db.prepare(`
+      SELECT cv.hash, cv.seq
+      FROM content_vectors cv
+      WHERE cv.hash IN (${exclusiveHashesQuery})
+    `).all(collection) as { hash: string; seq: number }[];
+
+    const delVec = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    for (const row of hashSeqRows) {
+      delVec.run(`${row.hash}_${row.seq}`);
+    }
+  }
+
+  db.prepare(`
+    DELETE FROM content_vectors
+    WHERE hash IN (${exclusiveHashesQuery})
+  `).run(collection);
+
+  const remaining = db
+    .prepare(`SELECT COUNT(*) AS n FROM content_vectors`)
+    .get() as { n: number };
+  if (remaining.n === 0) {
+    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+  }
 }
 
 /**
@@ -3989,6 +4161,21 @@ export type RankedListMeta = {
 };
 
 /**
+ * RRF list weights for hybridQuery.
+ *
+ * Original-query retrieval paths are the primary evidence and get 2x weight:
+ * - original FTS
+ * - original vector search
+ *
+ * Expansion-derived lists (lex/vec/hyde) stay at 1x regardless of list order,
+ * so a lex expansion inserted before original vector search cannot steal the
+ * original vector boost.
+ */
+export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  return rankedListMeta.map(meta => meta.queryType === "original" ? 2.0 : 1.0);
+}
+
+/**
  * Hybrid search: BM25 + vector + query expansion + RRF + chunked reranking.
  *
  * Pipeline:
@@ -4089,7 +4276,8 @@ export async function hybridQuery(
 
     // Batch embed all vector queries in a single call
     const llm = getLlm(store);
-    const textsToEmbed = vecQueries.map(q => formatQueryForEmbedding(q.text, llm.embedModelName));
+    const embedModel = llm.embedModelName;
+    const textsToEmbed = vecQueries.map(q => formatQueryForEmbedding(q.text, embedModel));
     hooks?.onEmbedStart?.(textsToEmbed.length);
     const embedStart = Date.now();
     const embeddings = await llm.embedBatch(textsToEmbed);
@@ -4101,7 +4289,7 @@ export async function hybridQuery(
       if (!embedding) continue;
 
       const vecResults = await store.searchVec(
-        vecQueries[i]!.text, DEFAULT_EMBED_MODEL, 20, collection,
+        vecQueries[i]!.text, embedModel, 20, collection,
         undefined, embedding
       );
       if (vecResults.length > 0) {
@@ -4119,8 +4307,9 @@ export async function hybridQuery(
     }
   }
 
-  // Step 4: RRF fusion — first 2 lists (original FTS + first vec) get 2x weight
-  const weights = rankedLists.map((_, i) => i < 2 ? 2.0 : 1.0);
+  // Step 4: RRF fusion — original-query FTS and vector lists get 2x weight;
+  // expansion-derived lists stay at 1x independent of insertion order.
+  const weights = getHybridRrfWeights(rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights);
   const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
   const candidates = fused.slice(0, candidateLimit);
@@ -4331,10 +4520,11 @@ export async function vectorSearchQuery(
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 
   // Run original + vec/hyde expanded through vector, sequentially — concurrent embed() hangs
+  const embedModel = getLlm(store).embedModelName;
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, DEFAULT_EMBED_MODEL, limit, collection);
+    const vecResults = await store.searchVec(q, embedModel, limit, collection);
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -4472,7 +4662,8 @@ export async function structuredSearch(
     );
     if (vecSearches.length > 0) {
       const llm = getLlm(store);
-      const textsToEmbed = vecSearches.map(s => formatQueryForEmbedding(s.query, llm.embedModelName));
+      const embedModel = llm.embedModelName;
+      const textsToEmbed = vecSearches.map(s => formatQueryForEmbedding(s.query, embedModel));
       hooks?.onEmbedStart?.(textsToEmbed.length);
       const embedStart = Date.now();
       const embeddings = await llm.embedBatch(textsToEmbed);
@@ -4484,7 +4675,7 @@ export async function structuredSearch(
 
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, DEFAULT_EMBED_MODEL, 20, coll,
+            vecSearches[i]!.query, embedModel, 20, coll,
             undefined, embedding
           );
           if (vecResults.length > 0) {

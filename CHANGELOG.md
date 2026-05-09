@@ -4,6 +4,18 @@
 
 ### Fixes
 
+- Embedding: `qmd embed -c <collection>` now scopes pending-doc selection
+  to the requested collection instead of embedding global pending work.
+  Scoped `--force` clears only collection-owned vectors, preserves shared
+  hashes referenced by sibling collections, and drops `vectors_vec` only
+  when the scoped clear empties all vectors.
+- Hybrid search: weight RRF lists by query type so original FTS and original vector evidence get the intended 2x boost, instead of accidentally boosting the first lexical expansion. #591
+- MCP: seed llama.cpp/GGML quiet env vars before launching `qmd mcp` so native logs cannot pollute stdio JSON-RPC framing. #593
+- CLI: remove CommonJS `require()` calls from ESM index path normalization so `qmd --index <path>` no longer crashes with `ERR_AMBIGUOUS_MODULE_SYNTAX` on Node 22+. #634
+- Windows CUDA: serialize llama.cpp embedding/reranking contexts by default to avoid intermittent `ggml-cuda.cu:98` crashes in `qmd query`; set `QMD_EMBED_PARALLELISM` to opt back into parallel contexts if your driver is stable. #519
+- MCP: make `qmd mcp --index <name>` use the selected index for both foreground and daemon HTTP servers instead of falling back to the default store. #343
+- Embedding: respect `QMD_EMBED_MODEL` consistently for vector indexing and vector-backed search, with default-model fallback when unset.
+- Config: use one home-directory resolver for YAML config and the default SQLite cache path, avoiding Windows CLI/MCP split-brain when `HOME` is unset.
 - GPU: respect explicit `QMD_LLAMA_GPU=metal|vulkan|cuda` backend overrides instead of always using auto GPU selection. #529
 - Fix: preserve original filename case in `handelize()`. The previous
   `.toLowerCase()` call made indexed paths unreachable on case-sensitive
@@ -12,6 +24,15 @@
 - CLI: make `qmd status` skip native `node-llama-cpp` device probing by
   default so status stays safe on machines with broken or unsupported GPU
   drivers. Set `QMD_STATUS_DEVICE_PROBE=1` to opt in.
+- CLI: lazy-load `node-llama-cpp` so lightweight commands such as
+  `qmd status` do not import native ML dependencies or trigger llama.cpp
+  builds on ARM/no-GPU machines. #491
+- Store: keep content rows referenced by inactive documents during orphan
+  cleanup so `qmd update` preserves soft-deleted tombstones for removed
+  files. #585
+- Packaging: install AST grammar WASM packages as required dependencies so
+  Bun global installs include TypeScript/TSX/JavaScript grammars, and add a
+  `smoke:package-grammars` verification command. #595
 
 ## [2.1.0] - 2026-04-05
 
