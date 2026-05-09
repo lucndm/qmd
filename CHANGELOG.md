@@ -12,6 +12,9 @@
 - CLI: make `qmd status` skip native `node-llama-cpp` device probing by
   default so status stays safe on machines with broken or unsupported GPU
   drivers. Set `QMD_STATUS_DEVICE_PROBE=1` to opt in.
+- CLI: lazy-load `node-llama-cpp` so lightweight commands such as
+  `qmd status` do not import native ML dependencies or trigger llama.cpp
+  builds on ARM/no-GPU machines. #491
 
 ## [2.1.0] - 2026-04-05
 
