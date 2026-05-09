@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- Embedding: `qmd embed -c <collection>` now scopes pending-doc selection
+  to the requested collection instead of embedding global pending work.
+  Scoped `--force` clears only collection-owned vectors, preserves shared
+  hashes referenced by sibling collections, and drops `vectors_vec` only
+  when the scoped clear empties all vectors.
 - GPU: respect explicit `QMD_LLAMA_GPU=metal|vulkan|cuda` backend overrides instead of always using auto GPU selection. #529
 - Fix: preserve original filename case in `handelize()`. The previous
   `.toLowerCase()` call made indexed paths unreachable on case-sensitive
