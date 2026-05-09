@@ -733,6 +733,73 @@ export function verifySqliteVecLoaded(db: Database): void {
 
 let _sqliteVecAvailable: boolean | null = null;
 
+const CJK_CHAR_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const CJK_RUN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const FTS_CJK_NORMALIZED_VERSION = "1";
+
+/**
+ * FTS5's unicode61 tokenizer does not segment CJK text into searchable words.
+ * Normalize CJK runs by spacing every character so exact CJK queries can be
+ * translated into phrase queries while Latin text keeps the default tokenizer.
+ */
+export function normalizeCjkForFTS(text: string): string {
+  return text.replace(CJK_RUN_PATTERN, run => ` ${Array.from(run).join(' ')} `);
+}
+
+function containsCjk(text: string): boolean {
+  return CJK_CHAR_PATTERN.test(text);
+}
+
+function sanitizeFTS5Phrase(phrase: string): string {
+  return normalizeCjkForFTS(phrase)
+    .split(/\s+/)
+    .map(t => sanitizeFTS5Term(t))
+    .filter(t => t)
+    .join(' ');
+}
+
+function rebuildFTSForCjkNormalization(db: Database): void {
+  const version = db.prepare(`SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`).get() as { value?: string } | undefined;
+  if (version?.value === FTS_CJK_NORMALIZED_VERSION) return;
+
+  try {
+    db.exec(`DELETE FROM documents_fts WHERE rowid >= 0`);
+  } catch {
+    // Some older/corrupt FTS5 shadow-table states can reject bulk deletes even
+    // though reads still work. Recreate the virtual table; documents_fts is a
+    // derived index, so rebuilding it from documents/content is safe.
+    db.exec(`DROP TABLE IF EXISTS documents_fts`);
+    db.exec(`
+      CREATE VIRTUAL TABLE documents_fts USING fts5(
+        filepath, title, body,
+        tokenize='porter unicode61'
+      )
+    `);
+  }
+  const rows = db.prepare(`
+    SELECT d.id, d.collection, d.path, d.title, content.doc as body
+    FROM documents d
+    JOIN content ON content.hash = d.hash
+    WHERE d.active = 1
+  `).all() as { id: number; collection: string; path: string; title: string; body: string }[];
+  const insert = db.prepare(`INSERT INTO documents_fts(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`);
+  const rebuild = db.transaction(() => {
+    for (const row of rows) {
+      insert.run(
+        row.id,
+        normalizeCjkForFTS(`${row.collection}/${row.path}`),
+        normalizeCjkForFTS(row.title),
+        normalizeCjkForFTS(row.body)
+      );
+    }
+  });
+  rebuild();
+  db.prepare(`
+    INSERT OR REPLACE INTO store_config(key, value)
+    VALUES ('fts_cjk_normalized_version', ?)
+  `).run(FTS_CJK_NORMALIZED_VERSION);
+}
+
 function initializeDatabase(db: Database): void {
   try {
     loadSqliteVec(db);
@@ -838,9 +905,12 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
-  // Triggers to keep FTS in sync
+  // Triggers keep FTS in sync for callers that write directly to documents.
+  // Production indexing paths rebuild entries in TypeScript so CJK text can be
+  // normalized before it reaches the unicode61 tokenizer.
+  db.exec(`DROP TRIGGER IF EXISTS documents_ai`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents
+    CREATE TRIGGER documents_ai AFTER INSERT ON documents
     WHEN new.active = 1
     BEGIN
       INSERT INTO documents_fts(rowid, filepath, title, body)
@@ -853,14 +923,16 @@ function initializeDatabase(db: Database): void {
     END
   `);
 
+  db.exec(`DROP TRIGGER IF EXISTS documents_ad`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN
       DELETE FROM documents_fts WHERE rowid = old.id;
     END
   `);
 
+  db.exec(`DROP TRIGGER IF EXISTS documents_au`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents
+    CREATE TRIGGER documents_au AFTER UPDATE ON documents
     BEGIN
       -- Delete from FTS if no longer active
       DELETE FROM documents_fts WHERE rowid = old.id AND new.active = 0;
@@ -875,6 +947,8 @@ function initializeDatabase(db: Database): void {
       WHERE new.active = 1;
     END
   `);
+
+  rebuildFTSForCjkNormalization(db);
 }
 
 // =============================================================================
@@ -2077,6 +2151,28 @@ export function insertContent(db: Database, hash: string, content: string, creat
     .run(hash, content, createdAt);
 }
 
+function rebuildDocumentFTS(db: Database, documentId: number): void {
+  const row = db.prepare(`
+    SELECT d.id, d.collection, d.path, d.title, content.doc as body
+    FROM documents d
+    JOIN content ON content.hash = d.hash
+    WHERE d.id = ? AND d.active = 1
+  `).get(documentId) as { id: number; collection: string; path: string; title: string; body: string } | undefined;
+
+  db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(documentId);
+  if (!row) return;
+
+  db.prepare(`
+    INSERT INTO documents_fts(rowid, filepath, title, body)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    row.id,
+    normalizeCjkForFTS(`${row.collection}/${row.path}`),
+    normalizeCjkForFTS(row.title),
+    normalizeCjkForFTS(row.body)
+  );
+}
+
 /**
  * Insert a new document into the documents table.
  */
@@ -2098,6 +2194,9 @@ export function insertDocument(
       modified_at = excluded.modified_at,
       active = 1
   `).run(collectionName, path, title, hash, createdAt, modifiedAt);
+
+  const row = db.prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`).get(collectionName, path) as { id: number } | undefined;
+  if (row) rebuildDocumentFTS(db, row.id);
 }
 
 /**
@@ -2148,15 +2247,7 @@ export function findOrMigrateLegacyDocument(
 
     if (result.changes === 0) return false;
 
-    // FTS5 does not reliably update via the documents_au trigger's
-    // INSERT OR REPLACE. Manually rebuild the FTS entry.
-    db.prepare(`DELETE FROM documents_fts WHERE rowid = ?`).run(legacy.id);
-    db.prepare(`
-      INSERT INTO documents_fts(rowid, filepath, title, body)
-      SELECT id, collection || '/' || path, title,
-             (SELECT doc FROM content WHERE hash = documents.hash)
-      FROM documents WHERE id = ?
-    `).run(legacy.id);
+    rebuildDocumentFTS(db, legacy.id);
 
     return true;
   });
@@ -2177,6 +2268,7 @@ export function updateDocumentTitle(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`)
     .run(title, modifiedAt, documentId);
+  rebuildDocumentFTS(db, documentId);
 }
 
 /**
@@ -2192,6 +2284,7 @@ export function updateDocument(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, hash = ?, modified_at = ? WHERE id = ?`)
     .run(title, hash, modifiedAt, documentId);
+  rebuildDocumentFTS(db, documentId);
 }
 
 /**
@@ -2940,7 +3033,7 @@ function buildFTS5Query(query: string): string | null {
       const phrase = s.slice(start, i).trim();
       i++; // skip closing quote
       if (phrase.length > 0) {
-        const sanitized = phrase.split(/\s+/).map(t => sanitizeFTS5Term(t)).filter(t => t).join(' ');
+        const sanitized = sanitizeFTS5Phrase(phrase);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // Exact phrase, no prefix match
           if (negated) {
@@ -2962,6 +3055,16 @@ function buildFTS5Query(query: string): string | null {
         const sanitized = sanitizeHyphenatedTerm(term);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)
+          if (negated) {
+            negative.push(ftsPhrase);
+          } else {
+            positive.push(ftsPhrase);
+          }
+        }
+      } else if (containsCjk(term)) {
+        const sanitized = sanitizeFTS5Phrase(term);
+        if (sanitized) {
+          const ftsPhrase = `"${sanitized}"`;  // CJK phrase over character tokens
           if (negated) {
             negative.push(ftsPhrase);
           } else {

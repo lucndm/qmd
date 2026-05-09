@@ -48,6 +48,8 @@ import {
   syncConfigToDb,
   STRONG_SIGNAL_MIN_SCORE,
   STRONG_SIGNAL_MIN_GAP,
+  insertContent,
+  insertDocument,
   generateEmbeddings,
   type Store,
   type DocumentResult,
@@ -156,18 +158,18 @@ async function insertTestDocument(
   const hash = opts.hash || await hashContent(body);
 
   // Insert content (with OR IGNORE for deduplication)
-  db.prepare(`
-    INSERT OR IGNORE INTO content (hash, doc, created_at)
-    VALUES (?, ?, ?)
-  `).run(hash, body, now);
+  insertContent(db, hash, body, now);
 
-  // Insert document
-  const result = db.prepare(`
-    INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(collectionName, path, title, hash, now, now, active);
+  insertDocument(db, collectionName, path, title, hash, now, now);
+  const row = db.prepare(`
+    SELECT id FROM documents WHERE collection = ? AND path = ?
+  `).get(collectionName, path) as { id: number } | undefined;
 
-  return Number(result.lastInsertRowid);
+  if (active === 0 && row) {
+    db.prepare(`UPDATE documents SET active = 0 WHERE id = ?`).run(row.id);
+  }
+
+  return row?.id ?? 0;
 }
 
 /** Sync YAML config file to SQLite store_collections in the current test store */
@@ -1246,6 +1248,61 @@ describe("FTS Search", () => {
     const filtered = store.searchFTS("searchable", 10, collection1);
     expect(filtered).toHaveLength(1);
     expect(filtered[0]!.displayPath).toBe(`${collection1}/doc1.md`);
+
+    await cleanupTestDb(store);
+  });
+
+  test("searchFTS finds CJK documents by exact and mixed queries", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+
+    await insertTestDocument(store.db, collectionName, {
+      name: "zh",
+      title: "中文检索说明",
+      body: "这里介绍 vector 数据库和关键词检索。",
+      displayPath: "cjk/zh.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "ja",
+      title: "日本語検索メモ",
+      body: "この文書は検索品質とトークン化について説明します。",
+      displayPath: "cjk/ja.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko",
+      title: "한국어 검색 노트",
+      body: "이 문서는 검색 품질과 토큰화 문제를 설명합니다.",
+      displayPath: "cjk/ko.md",
+    });
+
+    expect(store.searchFTS("关键词检索", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
+    expect(store.searchFTS("検索品質", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ja.md`);
+    expect(store.searchFTS("검색 품질", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/ko.md`);
+    expect(store.searchFTS("vector 关键词", 10).map(r => r.displayPath)).toContain(`${collectionName}/cjk/zh.md`);
+
+    await cleanupTestDb(store);
+  });
+
+  test("searchFTS keeps English behavior while indexing CJK text", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+
+    await insertTestDocument(store.db, collectionName, {
+      name: "english",
+      title: "Vector Search Notes",
+      body: "The quick brown fox explains vector search and BM25 ranking.",
+      displayPath: "english.md",
+    });
+    await insertTestDocument(store.db, collectionName, {
+      name: "zh",
+      title: "中文检索说明",
+      body: "这里介绍向量数据库和关键词检索。",
+      displayPath: "zh.md",
+    });
+
+    const foxResults = store.searchFTS("quick fox", 10);
+    expect(foxResults.map(r => r.displayPath)).toContain(`${collectionName}/english.md`);
+    expect(foxResults.map(r => r.displayPath)).not.toContain(`${collectionName}/zh.md`);
 
     await cleanupTestDb(store);
   });
