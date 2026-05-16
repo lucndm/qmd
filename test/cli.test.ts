@@ -508,6 +508,16 @@ describe("CLI Search Command", () => {
     // Error message goes to stderr
     expect(stderr).toContain("Usage:");
   });
+
+  test("--json --full includes line field for round-tripping to qmd get", async () => {
+    const { stdout, exitCode } = await runQmd(["search", "meeting", "--json", "--full", "-n", "1"]);
+    expect(exitCode).toBe(0);
+    const results = JSON.parse(stdout);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].line).toBeTypeOf("number");
+    expect(results[0].line).toBeGreaterThan(0);
+    expect(results[0].body).toBeTypeOf("string");
+  });
 });
 
 describe("CLI Get Command", () => {
@@ -532,6 +542,13 @@ describe("CLI Get Command", () => {
     const { stdout, exitCode } = await runQmd(["get", "nonexistent.md"]);
     // Should indicate file not found
     expect(exitCode).toBe(1);
+  });
+
+  test("clamps negative --from to top of file (no silent tail content)", async () => {
+    const baseline = await runQmd(["get", "README.md"]);
+    const negative = await runQmd(["get", "README.md", "--from", "-19"]);
+    expect(negative.exitCode).toBe(0);
+    expect(negative.stdout).toBe(baseline.stdout);
   });
 });
 
