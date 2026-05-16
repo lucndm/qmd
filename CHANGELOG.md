@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changes
+
+- Agent skills: add `qmd skills list|get|path` to serve version-matched runtime skill instructions from the installed CLI, and make `qmd skill install` write a stable discovery stub so installed agent skills do not go stale after QMD upgrades.
+
 ### Fixes
 
 - GPU: add `QMD_FORCE_CPU=1` / `--no-gpu` to bypass CUDA/Vulkan/Metal probing entirely, and route native llama.cpp stdout noise to stderr so JSON output stays parseable during search/query commands.

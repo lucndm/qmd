@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,7 +59,9 @@ describe("local .qmd project config", () => {
     writeFileSync(join(root, ".qmd", "index.yaml"), `collections:\n  docs:\n    path: ${JSON.stringify(join(root, "docs"))}\n    pattern: "**/*.md"\n    context:\n      /: Local test docs\n`);
 
     const home = join(root, "home");
-    const output = execFileSync("bun", [join(process.cwd(), "src/cli/qmd.ts"), "status"], {
+    const tsxBin = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const runner = existsSync(tsxBin) ? tsxBin : "bun";
+    const output = execFileSync(runner, [join(process.cwd(), "src/cli/qmd.ts"), "status"], {
       cwd: root,
       encoding: "utf-8",
       env: {
@@ -70,9 +72,10 @@ describe("local .qmd project config", () => {
       },
     });
 
-    expect(output).toContain(`Index: ${join(root, ".qmd", "index.sqlite")}`);
+    const localIndex = join(root, ".qmd", "index.sqlite");
+    expect(output).toContain(`Index: ${realpathSync(localIndex)}`);
     expect(output).toContain("docs (qmd://docs/)");
-    expect(existsSync(join(root, ".qmd", "index.sqlite"))).toBe(true);
+    expect(existsSync(localIndex)).toBe(true);
     expect(existsSync(join(home, ".cache", "qmd", "index.sqlite"))).toBe(false);
   });
 });
