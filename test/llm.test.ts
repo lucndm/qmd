@@ -178,6 +178,40 @@ describe("native llama stdout containment", () => {
       else process.env.QMD_FORCE_CPU = prevForceCpu;
     }
   });
+
+  test("warns about CPU fallback only once per process", async () => {
+    const prevGpu = process.env.QMD_LLAMA_GPU;
+    const prevForceCpu = process.env.QMD_FORCE_CPU;
+    process.env.QMD_LLAMA_GPU = "false";
+    delete process.env.QMD_FORCE_CPU;
+
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile: vi.fn(),
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(async () => ({ gpu: false, cpuMathCores: 4 }) as any),
+    });
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const first = new LlamaCpp();
+      const second = new LlamaCpp();
+
+      await (first as any).ensureLlama();
+      await (second as any).ensureLlama();
+
+      const stderr = String(stderrSpy.mock.calls.map(call => call[0]).join(""));
+      expect(stderr.match(/no GPU acceleration/g)?.length).toBe(1);
+      expect(stderr).toContain("QMD_STATUS_DEVICE_PROBE=1 qmd status");
+    } finally {
+      stderrSpy.mockRestore();
+      setNodeLlamaCppModuleForTest(null);
+      if (prevGpu === undefined) delete process.env.QMD_LLAMA_GPU;
+      else process.env.QMD_LLAMA_GPU = prevGpu;
+      if (prevForceCpu === undefined) delete process.env.QMD_FORCE_CPU;
+      else process.env.QMD_FORCE_CPU = prevForceCpu;
+    }
+  });
 });
 
 describe("LLM context parallelism safety", () => {

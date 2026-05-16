@@ -470,10 +470,13 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("Collection");
   });
 
-  test("skips device probing by default", async () => {
+  test("shows device mode without native probing by default", async () => {
     const { stdout, exitCode } = await runQmd(["status"]);
     expect(exitCode).toBe(0);
-    expect(stdout).not.toContain("Device");
+    expect(stdout).toContain("Device");
+    expect(stdout).toContain("Mode:");
+    expect(stdout).toContain("not probed");
+    expect(stdout).toContain("QMD_STATUS_DEVICE_PROBE=1");
   });
 });
 

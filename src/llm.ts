@@ -31,6 +31,7 @@ async function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
 export function setNodeLlamaCppModuleForTest(module: NodeLlamaCppModule | null): void {
   nodeLlamaCppImport = module ? Promise.resolve(module) : null;
   failedGpuInitModes.clear();
+  noGpuAccelerationWarningShown = false;
 }
 
 type StdoutWrite = typeof process.stdout.write;
@@ -579,6 +580,7 @@ function resolveExpandContextSize(configValue?: number): number {
 }
 
 const failedGpuInitModes = new Set<LlamaGpuMode>();
+let noGpuAccelerationWarningShown = false;
 
 export class LlamaCpp implements LLM {
   private readonly _ciMode = !!process.env.CI;
@@ -760,9 +762,10 @@ export class LlamaCpp implements LLM {
         }
       }
 
-      if (llama.gpu === false) {
+      if (llama.gpu === false && !noGpuAccelerationWarningShown) {
+        noGpuAccelerationWarningShown = true;
         process.stderr.write(
-          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'qmd status' for details.\n"
+          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'QMD_STATUS_DEVICE_PROBE=1 qmd status' for device details.\n"
         );
       }
       this.llama = llama;
