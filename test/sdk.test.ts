@@ -614,6 +614,20 @@ describe("search (unified API)", () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
+  test("search() forwards candidateLimit to structured search", async () => {
+    const results = await store.search({
+      queries: [
+        { type: "lex", query: "authentication" },
+        { type: "lex", query: "meeting" },
+      ],
+      limit: 5,
+      candidateLimit: 1,
+      rerank: false,
+    });
+
+    expect(results).toHaveLength(1);
+  });
+
   // Tests below use search({ query: ... }) which triggers LLM query expansion
   describe.skipIf(!!process.env.CI)("with LLM query expansion", () => {
     test("search() with query and rerank:false returns results", async () => {

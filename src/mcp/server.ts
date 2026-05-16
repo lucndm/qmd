@@ -328,6 +328,7 @@ Intent-aware lex (C++ performance, not sports):
         collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
         limit,
         minScore,
+        candidateLimit,
         rerank,
         intent,
       });
@@ -689,6 +690,7 @@ export async function startMcpHttpServer(
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
           limit: params.limit ?? 10,
           minScore: params.minScore ?? 0,
+          candidateLimit: params.candidateLimit,
           intent: params.intent,
           rerank: params.rerank,
         });

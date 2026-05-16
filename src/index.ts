@@ -159,6 +159,8 @@ export interface SearchOptions {
   collections?: string[];
   /** Max results (default: 10) */
   limit?: number;
+  /** Max candidates to rerank (default: 40) */
+  candidateLimit?: number;
   /** Minimum score threshold */
   minScore?: number;
   /** Include explain traces */
@@ -402,6 +404,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           minScore: opts.minScore,
           explain: opts.explain,
           intent: opts.intent,
+          candidateLimit: opts.candidateLimit,
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
         });
@@ -414,6 +417,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         minScore: opts.minScore,
         explain: opts.explain,
         intent: opts.intent,
+        candidateLimit: opts.candidateLimit,
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
       });
