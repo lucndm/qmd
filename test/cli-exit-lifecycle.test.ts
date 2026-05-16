@@ -11,6 +11,7 @@ describe("CLI successful-exit lifecycle", () => {
     await finishSuccessfulCliCommand({
       command: "query",
       format: "json",
+      platform: "linux",
       cleanup: async () => {
         throw new Error("ggml_metal_device_free abort simulation");
       },
