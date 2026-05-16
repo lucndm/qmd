@@ -212,6 +212,76 @@ const cursor = {
   show() { process.stderr.write('\x1b[?25h'); },
 };
 
+type CliLifecycleWritable = {
+  write(chunk: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+};
+
+type FinishSuccessfulCliCommandOptions = {
+  command: string;
+  format?: OutputFormat;
+  cleanup?: () => Promise<void>;
+  exit?: (code: number) => void;
+  immediateExit?: (code: number) => void;
+  stdout?: CliLifecycleWritable;
+  stderr?: CliLifecycleWritable;
+  platform?: NodeJS.Platform;
+};
+
+async function flushWritable(stream: CliLifecycleWritable): Promise<void> {
+  await new Promise<void>((resolve) => {
+    stream.write("", () => resolve());
+  });
+}
+
+function shouldBypassNativeCleanup(options: FinishSuccessfulCliCommandOptions): boolean {
+  return (
+    (options.platform ?? process.platform) === "darwin" &&
+    options.command === "query" &&
+    options.format === "json" &&
+    process.env.QMD_DISABLE_DARWIN_QUERY_JSON_SAFE_EXIT !== "1"
+  );
+}
+
+function immediateProcessExit(code: number): void {
+  const processWithReallyExit = process as NodeJS.Process & { reallyExit?: (code?: number) => void };
+  if (typeof processWithReallyExit.reallyExit === "function") {
+    processWithReallyExit.reallyExit(code);
+    return;
+  }
+  process.exit(code);
+}
+
+/**
+ * Finish a successful CLI command after output has been flushed. On macOS JSON
+ * query runs, skip normal native teardown and use Node/Bun's immediate exit path:
+ * ggml Metal can abort from C++ finalizers after valid JSON has already been
+ * produced (#368). This wrapper is only reached after the command completed, so
+ * real query failures still exit through the normal error path before this runs.
+ */
+export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCommandOptions): Promise<void> {
+  const stderr = options.stderr ?? process.stderr;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const immediateExit = options.immediateExit ?? immediateProcessExit;
+
+  await flushWritable(options.stdout ?? process.stdout);
+
+  if (shouldBypassNativeCleanup(options)) {
+    await flushWritable(stderr);
+    immediateExit(0);
+    return;
+  }
+
+  try {
+    await (options.cleanup ?? disposeDefaultLlamaCpp)();
+  } catch (error) {
+    stderr.write(
+      `QMD Warning: cleanup after successful output failed (${error instanceof Error ? error.message : String(error)}); exiting 0 because command output completed.\n`
+    );
+  }
+  await flushWritable(stderr);
+  exit(0);
+}
+
 // Ensure cursor is restored on exit
 process.on('SIGINT', () => { cursor.show(); process.exit(130); });
 process.on('SIGTERM', () => { cursor.show(); process.exit(143); });
@@ -849,6 +919,7 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
       inputPath = inputPath.slice(0, -colonMatch[0].length);
     }
   }
+  if (fromLine !== undefined) fromLine = Math.max(1, fromLine);
 
   const parsedIndexPath = isVirtualPath(inputPath) ? parseVirtualPath(inputPath) : null;
   if (parsedIndexPath?.indexName) {
@@ -1740,7 +1811,7 @@ async function vectorIndex(
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection);
+  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection, model);
   if (hashesToEmbed === 0 && !force) {
     console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
     closeDb();
@@ -1930,6 +2001,7 @@ type OutputRow = {
   score: number;
   context?: string | null;
   chunkPos?: number;
+  chunkLen?: number;
   hash?: string;
   docid?: string;
   explain?: HybridQueryExplain;
@@ -2012,9 +2084,9 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     // JSON output for LLM consumption
     const output = filtered.map(row => {
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
+      const snippetInfo = extractSnippet(row.body, query, 300, row.chunkPos, row.chunkLen, opts.intent);
       let body = opts.full ? row.body : undefined;
-      const snippetInfo = !opts.full ? extractSnippet(row.body, query, 300, row.chunkPos, undefined, opts.intent) : undefined;
-      let snippet = snippetInfo?.snippet;
+      let snippet = !opts.full ? snippetInfo.snippet : undefined;
       if (opts.lineNumbers) {
         if (body) body = addLineNumbers(body);
         if (snippet) snippet = addLineNumbers(snippet);
@@ -2023,7 +2095,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         ...(docid && { docid: `#${docid}` }),
         score: Math.round(row.score * 100) / 100,
         file: toQmdPath(row.displayPath),
-        ...(snippetInfo && { line: snippetInfo.line }),
+        line: snippetInfo.line,
         title: row.title,
         ...(row.context && { context: row.context }),
         ...(body && { body }),
@@ -2046,7 +2118,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     for (let i = 0; i < filtered.length; i++) {
       const row = filtered[i];
       if (!row) continue;
-      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, undefined, opts.intent);
+      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent);
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
 
       // Line 1: filepath with docid
@@ -2110,8 +2182,9 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       console.log();
 
       // Snippet with highlighting (diff-style header included)
-      let displaySnippet = opts.lineNumbers ? addLineNumbers(snippet, line) : snippet;
-      const highlighted = highlightTerms(displaySnippet, query);
+      const content = opts.full ? row.body : snippet;
+      const displayContent = opts.lineNumbers ? addLineNumbers(content, opts.full ? 1 : line) : content;
+      const highlighted = highlightTerms(displayContent, query);
       console.log(highlighted);
 
       // Double empty line between results
@@ -2123,7 +2196,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       if (!row) continue;
       const heading = row.title || row.displayPath;
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
-      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, undefined, opts.intent).snippet;
+      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
@@ -2136,7 +2209,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       const titleAttr = row.title ? ` title="${row.title.replace(/"/g, '&quot;')}"` : "";
       const contextAttr = row.context ? ` context="${row.context.replace(/"/g, '&quot;')}"` : "";
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
-      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, undefined, opts.intent).snippet;
+      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
@@ -2146,10 +2219,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     // CSV format
     console.log("docid,score,file,title,context,line,snippet");
     for (const row of filtered) {
-      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, undefined, opts.intent);
+      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent);
       let content = opts.full ? row.body : snippet;
       if (opts.lineNumbers) {
-        content = addLineNumbers(content, line);
+        content = addLineNumbers(content, opts.full ? 1 : line);
       }
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
       const snippetText = content || "";
@@ -2505,13 +2578,13 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       ? (structuredQueries.find(s => s.type === 'lex')?.query || structuredQueries.find(s => s.type === 'vec')?.query || query)
       : query;
 
-    // Map to CLI output format — use bestChunk for snippet display
     outputResults(results.map(r => ({
       file: r.file,
       displayPath: r.displayPath,
       title: r.title,
-      body: r.bestChunk,
+      body: r.body,
       chunkPos: r.bestChunkPos,
+      chunkLen: r.bestChunk.length,
       score: r.score,
       context: r.context,
       docid: r.docid,
@@ -2567,6 +2640,7 @@ function parseCLI() {
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
+      "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
@@ -2578,6 +2652,10 @@ function parseCLI() {
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
   });
+
+  if (values["no-gpu"]) {
+    process.env.QMD_FORCE_CPU = "1";
+  }
 
   // Select index name (default: "index"). If no explicit --index is supplied,
   // a project-local .qmd/index.yaml overrides the global config/cache paths.
@@ -2842,6 +2920,7 @@ function showHelp(): void {
   console.log("  --full                     - Output full document instead of snippet");
   console.log("  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)");
   console.log("  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)");
+  console.log("  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)");
   console.log("  --line-numbers             - Include line numbers in output");
   console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
   console.log("  --files | --json | --csv | --md | --xml  - Output format");
@@ -3430,8 +3509,10 @@ if (isMain) {
   }
 
   if (cli.command !== "mcp") {
-    await disposeDefaultLlamaCpp();
-    process.exit(0);
+    await finishSuccessfulCliCommand({
+      command: cli.command,
+      format: cli.opts.format,
+    });
   }
 
 } // end if (main module)

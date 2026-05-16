@@ -1713,6 +1713,21 @@ describe("Document Retrieval", () => {
       expect(body).toBeNull();
       await cleanupTestDb(store);
     });
+
+    test("getDocumentBody clamps negative fromLine to top of document", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection({ pwd: "/path" });
+      await insertTestDocument(store.db, collectionName, {
+        name: "mydoc",
+        displayPath: "mydoc.md",
+        body: "Line 1\nLine 2\nLine 3\nLine 4\nLine 5",
+      });
+
+      const body = store.getDocumentBody({ filepath: "/path/mydoc.md" }, -19, 80);
+      expect(body).toBe("Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+
+      await cleanupTestDb(store);
+    });
   });
 
   describe("findDocuments (multi-get)", () => {
@@ -2001,6 +2016,33 @@ describe("Snippet Extraction", () => {
     expect(line).toBe(51); // "Target keyword" is line 51
     expect(linesBefore).toBeGreaterThan(40); // Many lines before
   });
+
+  test("extractSnippet anchors on chunkPos when lexical scoring finds no match", () => {
+    // The snippet tokenizer does not strip FTS5 syntax, so a quoted-phrase query
+    // tokenises into terms with embedded quotes that never appear in body text.
+    // bestScore stays at 0 even though the reranker correctly identified a chunk;
+    // the fallback should anchor on chunkPos rather than defaulting to line 1.
+    const padLine = "Lorem ipsum dolor sit amet\n";
+    const padding = padLine.repeat(100);
+    const body = padding + "chunk content here\nmore chunk content\n" + padding;
+    const chunkPos = padding.length;
+
+    const { line } = extractSnippet(body, '"unrelated quoted phrase"', 200, chunkPos);
+
+    expect(line).toBeGreaterThan(50);
+    expect(line).toBeLessThan(110);
+  });
+
+  test("extractSnippet with chunkPos=0 falls back to full-body scan when chunk has no match", () => {
+    // chunkPos=0 may be the chunk selector's bestIdx=0 default rather than a real
+    // first-chunk hit, so the fallback must consider matches outside chunk 0.
+    const padding = "Lorem ipsum dolor sit amet\n".repeat(200);
+    const body = padding + "TARGET_KEYWORD line content\ntail line\n";
+
+    const { line } = extractSnippet(body, "TARGET_KEYWORD", 200, 0);
+
+    expect(line).toBe(201);
+  });
 });
 
 // =============================================================================
@@ -2235,6 +2277,26 @@ describe("Index Status", () => {
 
     const needsEmbedding = store.getHashesNeedingEmbedding();
     expect(needsEmbedding).toBe(2); // hash1 and hash2
+
+    await cleanupTestDb(store);
+  });
+
+  test("embedding health is scoped to the active embed model", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const activeModel = "hf:active/embed-model.gguf";
+    const staleModel = "hf:stale/embed-model.gguf";
+    const now = new Date().toISOString();
+
+    store.llm = { embedModelName: activeModel } as any;
+    store.ensureVecTable(3);
+    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
+    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), staleModel, now, 1);
+
+    expect(store.getHashesNeedingEmbedding()).toBe(1);
+    expect(store.getStatus().needsEmbedding).toBe(1);
+    expect(store.getIndexHealth().needsEmbedding).toBe(1);
+    expect(store.getHashesNeedingEmbedding(staleModel)).toBe(0);
 
     await cleanupTestDb(store);
   });
@@ -3046,6 +3108,68 @@ describe("Embedding batching", () => {
       expect(fakeLlm.embedBatchModelCalls).toEqual([{ model }]);
       expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
     } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings does not mark a partially embedded multi-chunk document complete", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = {
+      async embed(_text: string, _options?: { model?: string }) {
+        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+      },
+      async embedBatch(texts: string[], _options?: { model?: string }) {
+        return texts.map((_text, index) => index === 0
+          ? { embedding: [1, 2, 3], model: "fake-embed" }
+          : null
+        );
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      await insertTestDocument(db, "docs", {
+        name: "long-doc",
+        body: "# Long doc\n\n" + "partial embedding regression ".repeat(260),
+      });
+
+      const result = await generateEmbeddings(store);
+
+      expect(result.errors).toBeGreaterThan(0);
+      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 0 });
+      expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 0 });
+      expect(store.getHashesNeedingEmbedding()).toBe(1);
+      expect(store.getStatus().needsEmbedding).toBe(1);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings opens a long-lived LLM session for embed runs", async () => {
+    const store = await createTestStore();
+    const fakeLlm = createFakeEmbedLlm();
+    const sessionSpy = vi.spyOn(llmModule, "withLLMSessionForLlm");
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      await insertTestDocument(store.db, "docs", { name: "one", body: "# One\n\nAlpha" });
+
+      await generateEmbeddings(store);
+
+      expect(sessionSpy).toHaveBeenCalledWith(
+        fakeLlm,
+        expect.any(Function),
+        expect.objectContaining({ maxDuration: 30 * 60 * 1000, name: "generateEmbeddings" }),
+      );
+    } finally {
+      sessionSpy.mockRestore();
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
     }
