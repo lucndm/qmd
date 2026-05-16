@@ -863,6 +863,71 @@ describe("CLI ls Command", () => {
     expect(stdout).toContain("qmd://fixtures/docs/api.md");
   });
 
+  test("continues to normalize extra slashes for normal collection virtual paths", async () => {
+    const { stdout, stderr, exitCode } = await runQmd(["ls", "qmd:///fixtures/docs"], { dbPath: localDbPath });
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("qmd://fixtures/docs/api.md");
+  });
+
+  test("lists an absolute-path collection from a qmd:/// virtual path", async () => {
+    const env = await createIsolatedTestEnv("absolute-qmd-path");
+    const absoluteDir = await mkdtemp(join(tmpdir(), "qmd-absolute-collection-"));
+    await writeFile(join(absoluteDir, "root.md"), "# Absolute collection\n");
+    await writeFile(
+      join(env.configDir, "index.yml"),
+      `collections:\n  "${absoluteDir}":\n    path: "${absoluteDir}"\n    pattern: "**/*.md"\n`
+    );
+
+    const update = await runQmd(["update"], {
+      cwd: absoluteDir,
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+    expect(update.exitCode).toBe(0);
+
+    const { stdout, stderr, exitCode } = await runQmd(["ls", `qmd://${absoluteDir}/`], {
+      cwd: absoluteDir,
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`qmd://${absoluteDir}/root.md`);
+  });
+
+  test("lists an absolute-path collection from a raw path using the longest prefix match", async () => {
+    const env = await createIsolatedTestEnv("absolute-raw-path");
+    const parentCollectionName = await mkdtemp(join(tmpdir(), "qmd-absolute-parent-name-"));
+    const childCollectionName = join(parentCollectionName, "nested");
+    const parentDataDir = await mkdtemp(join(tmpdir(), "qmd-absolute-parent-data-"));
+    const childDataDir = await mkdtemp(join(tmpdir(), "qmd-absolute-child-data-"));
+    await writeFile(join(parentDataDir, "parent.md"), "# Parent collection\n");
+    await writeFile(join(childDataDir, "child.md"), "# Child collection\n");
+    await writeFile(
+      join(env.configDir, "index.yml"),
+      `collections:\n  "${parentCollectionName}":\n    path: "${parentDataDir}"\n    pattern: "**/*.md"\n  "${childCollectionName}":\n    path: "${childDataDir}"\n    pattern: "**/*.md"\n`
+    );
+
+    const update = await runQmd(["update"], {
+      cwd: parentDataDir,
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+    expect(update.exitCode).toBe(0);
+
+    const { stdout, stderr, exitCode } = await runQmd(["ls", `${childCollectionName}/`], {
+      cwd: childDataDir,
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`qmd://${childCollectionName}/child.md`);
+    expect(stdout).not.toContain("No files found");
+    expect(stdout).not.toContain(`qmd://${parentCollectionName}/parent.md`);
+  });
+
   test("handles non-existent collection", async () => {
     const { stderr, exitCode } = await runQmd(["ls", "nonexistent"], { dbPath: localDbPath });
     expect(exitCode).toBe(1);

@@ -1303,15 +1303,22 @@ function listFiles(pathArg?: string): void {
     const match = allColls
       .filter(c => normalized === c.name || normalized.startsWith(c.name + '/'))
       .sort((a, b) => b.name.length - a.name.length)[0];
-    if (!match) {
-      console.error(`Collection not found for path: ${pathArg}`);
-      console.error(`Run 'qmd ls' to see available collections.`);
-      closeDb();
-      process.exit(1);
+    if (match) {
+      collectionName = match.name;
+      const rest = normalized.slice(match.name.length).replace(/^\//, '');
+      pathPrefix = rest || null;
+    } else {
+      // Preserve the historical qmd:////collection/path alias behavior for normal
+      // collections when no absolute-path collection matches.
+      const parsed = parseVirtualPath(pathArg);
+      if (!parsed) {
+        console.error(`Invalid virtual path: ${pathArg}`);
+        closeDb();
+        process.exit(1);
+      }
+      collectionName = parsed.collectionName;
+      pathPrefix = parsed.path;
     }
-    collectionName = match.name;
-    const rest = normalized.slice(match.name.length).replace(/^\//, '');
-    pathPrefix = rest || null;
   } else if (afterScheme !== null) {
     // Normal virtual path: qmd://collection-name/path
     const parsed = parseVirtualPath(pathArg);
