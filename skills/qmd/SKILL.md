@@ -1,138 +1,161 @@
 ---
 name: qmd
-description: Search markdown knowledge bases, notes, and documentation using QMD. Use when users ask to search notes, find documents, or look up information.
+description: Search local markdown knowledge bases, notes, docs, and wikis with QMD. Use when users ask to find notes, retrieve documents, inspect a wiki, answer from indexed markdown, or set up QMD access.
 license: MIT
 compatibility: Requires qmd CLI or MCP server. Install via `npm install -g @tobilu/qmd`.
 metadata:
   author: tobi
-  version: "2.0.0"
+  version: "2.1.0"
 allowed-tools: Bash(qmd:*), mcp__qmd__*
 ---
 
-# QMD - Quick Markdown Search
+# QMD - Query Markdown Documents
 
-Local search engine for markdown content.
+QMD is a local search and retrieval engine for markdown collections: notes, docs,
+wikis, transcripts, and project knowledge bases. Use it before generic web search
+when the user is asking about something that may already live in their indexed
+local markdown.
 
-## Status
+## Status Check
 
-!`qmd status 2>/dev/null || echo "Not installed: npm install -g @tobilu/qmd"`
+Start by checking what QMD can see:
 
-## MCP: `query`
+```bash
+qmd collection list
+qmd ls
+```
+
+For health details:
+
+```bash
+qmd status
+```
+
+If QMD is missing:
+
+```bash
+npm install -g @tobilu/qmd
+```
+
+## Retrieval Workflow
+
+1. **Discover collections** with `qmd collection list` or `qmd ls`.
+2. **Search first**, usually with a small result count.
+3. **Retrieve source documents** with `qmd get` or `qmd multi-get`.
+4. **Answer from the retrieved text**, citing file paths or docids.
+5. **If results are weak**, rewrite the query using a different search mode.
+
+Do not answer from search-result snippets alone when the user needs substance.
+Fetch the document.
+
+## Search Modes
+
+### Fast lexical search
+
+Use BM25 when you know names, exact terms, titles, identifiers, or code symbols:
+
+```bash
+qmd search "cockpit OKR Goodhart" -n 10
+qmd search '"AI Before Headcount"' -c concepts -n 5
+```
+
+Good `lex` queries are short: 2-6 discriminative terms, quoted phrases when exact,
+and no filler words.
+
+### Hybrid query search
+
+Use `qmd query` when semantic recall, query expansion, vector search, or reranking
+matters more than speed:
+
+```bash
+qmd query "decision quality depends on surfacing assumptions and context" -n 10
+qmd query --json --explain "metrics as cockpit instruments but not OKRs"
+```
+
+`qmd query` may initialize local models. If models/GPU are unavailable, slow, or
+crashing, fall back to `qmd search` and use better lexical terms.
+
+### Structured queries
+
+For subtle wiki/doc searches, structured queries are usually strongest:
+
+```bash
+qmd query $'intent: Find the concept note about metrics as instruments without letting OKRs replace judgment.\nlex: cockpit instruments OKR Goodhart metrics judgment\nvec: data informed not metric driven product judgment\nhyde: A concept note says metrics are useful like cockpit instruments, but leaders should remain data-informed rather than metric-driven because OKRs and dashboards can Goodhart product judgment.'
+```
+
+Use this pattern when the user's wording is indirect:
+
+- `intent:` disambiguates the target.
+- `lex:` anchors exact names, phrases, aliases, and rare terms.
+- `vec:` adds the semantic paraphrase.
+- `hyde:` describes the document that would answer the query.
+
+Put the best query first; early searches receive more weight in fusion.
+
+## MCP Tool: `query`
+
+When using the MCP server, prefer structured searches:
 
 ```json
 {
   "searches": [
-    { "type": "lex", "query": "CAP theorem consistency" },
-    { "type": "vec", "query": "tradeoff between consistency and availability" }
+    { "type": "lex", "query": "cockpit OKR Goodhart" },
+    { "type": "vec", "query": "data informed not metric driven product judgment" },
+    { "type": "hyde", "query": "A concept note explains that metrics are useful as instruments, but leaders should not let OKRs or dashboards replace judgment." }
   ],
-  "collections": ["docs"],
+  "intent": "Find the concept note about using metrics as instruments without becoming metric-driven.",
+  "collections": ["concepts"],
   "limit": 10
 }
 ```
 
 ### Query Types
 
-| Type | Method | Input |
-|------|--------|-------|
-| `lex` | BM25 | Keywords — exact terms, names, code |
-| `vec` | Vector | Question — natural language |
-| `hyde` | Vector | Answer — hypothetical result (50-100 words) |
+- `lex` — BM25 keyword search. Best for exact terms, names, titles, and code.
+- `vec` — vector semantic search. Best for natural-language concepts.
+- `hyde` — vector search using a hypothetical answer/document passage.
 
-### Writing Good Queries
-
-**lex (keyword)**
-- 2-5 terms, no filler words
-- Exact phrase: `"connection pool"` (quoted)
-- Exclude terms: `performance -sports` (minus prefix)
-- Code identifiers work: `handleError async`
-
-**vec (semantic)**
-- Full natural language question
-- Be specific: `"how does the rate limiter handle burst traffic"`
-- Include context: `"in the payment service, how are refunds processed"`
-
-**hyde (hypothetical document)**
-- Write 50-100 words of what the *answer* looks like
-- Use the vocabulary you expect in the result
-
-**expand (auto-expand)**
-- Use a single-line query (implicit) or `expand: question` on its own line
-- Lets the local LLM generate lex/vec/hyde variations
-- Do not mix `expand:` with other typed lines — it's either a standalone expand query or a full query document
-
-### Intent (Disambiguation)
-
-When a query term is ambiguous, add `intent` to steer results:
-
-```json
-{
-  "searches": [
-    { "type": "lex", "query": "performance" }
-  ],
-  "intent": "web page load times and Core Web Vitals"
-}
-```
-
-Intent affects expansion, reranking, chunk selection, and snippet extraction. It does not search on its own — it's a steering signal that disambiguates queries like "performance" (web-perf vs team health vs fitness).
-
-### Combining Types
-
-| Goal | Approach |
-|------|----------|
-| Know exact terms | `lex` only |
-| Don't know vocabulary | Use a single-line query (implicit `expand:`) or `vec` |
-| Best recall | `lex` + `vec` |
-| Complex topic | `lex` + `vec` + `hyde` |
-| Ambiguous query | Add `intent` to any combination above |
-
-First query gets 2x weight in fusion — put your best guess first.
-
-### Lex Query Syntax
-
-| Syntax | Meaning | Example |
-|--------|---------|---------|
-| `term` | Prefix match | `perf` matches "performance" |
-| `"phrase"` | Exact phrase | `"rate limiter"` |
-| `-term` | Exclude | `performance -sports` |
-
-Note: `-term` only works in lex queries, not vec/hyde.
-
-### Collection Filtering
-
-```json
-{ "collections": ["docs"] }              // Single
-{ "collections": ["docs", "notes"] }     // Multiple (OR)
-```
-
-Omit to search all collections.
-
-## Other MCP Tools
-
-| Tool | Use |
-|------|-----|
-| `get` | Retrieve doc by path or `#docid` |
-| `multi_get` | Retrieve multiple by glob/list |
-| `status` | Collections and health |
-
-## CLI
+## Retrieval Commands
 
 ```bash
-qmd query "question"              # Auto-expand + rerank
-qmd query $'lex: X\nvec: Y'       # Structured
-qmd query $'expand: question'     # Explicit expand
-qmd query --json --explain "q"    # Show score traces (RRF + rerank blend)
-qmd search "keywords"             # BM25 only (no LLM)
-qmd get "#abc123"                 # By docid
-qmd multi-get "journals/2026-*.md" -l 40  # Batch pull snippets by glob
-qmd multi-get notes/foo.md,notes/bar.md   # Comma-separated list, preserves order
+qmd get "#abc123"                         # retrieve by docid
+qmd get qmd://concepts/ai-before-headcount.md --full
+qmd multi-get 'concepts/{ai-before-headcount.md,data-informed-not-metric-driven.md}' --md
+qmd multi-get 'sources/podcast-2025-*.md' -l 80
 ```
 
-## HTTP API
+Use `multi-get` when comparing several hits or gathering context across pages.
+Use `--full` when the exact source matters.
+
+## Collection Filtering
 
 ```bash
-curl -X POST http://localhost:8181/query \
-  -H "Content-Type: application/json" \
-  -d '{"searches": [{"type": "lex", "query": "test"}]}'
+qmd search "headcount autonomous agents" -c concepts -n 10
+qmd query "merchant support product reality" -c concepts -c sources -n 10
+```
+
+Omit `-c` / `collections` to search everything. Add collection filters when a
+broad query drifts into the wrong corpus.
+
+## Query Craft
+
+Good QMD searches mix three things:
+
+1. **Title/alias anchors:** exact page titles, named entities, phrases.
+2. **Semantic paraphrase:** how a human would describe the idea.
+3. **Negative space:** enough intent to avoid nearby-but-wrong concepts.
+
+Examples:
+
+```bash
+# Exact-ish title lookup
+qmd search '"arm the rebels" merchants tools big companies' -c concepts
+
+# Semantic concept lookup
+qmd query $'intent: Find the customer proximity concept, not generic customer delight.\nlex: support pseudonymous merchant customer interviews\nvec: founder stays close to merchant reality through support and product use'
+
+# Source lookup
+qmd search "six-week cadence WhatsApp merchant relationships Shawn Ryan" -c sources -n 10
 ```
 
 ## Setup
@@ -142,3 +165,28 @@ npm install -g @tobilu/qmd
 qmd collection add ~/notes --name notes
 qmd embed
 ```
+
+Only add collections or generate embeddings when the user asked for setup or
+index maintenance. Searching and retrieving are safe; collection/index mutation is
+not a casual first step.
+
+## MCP Setup
+
+See `references/mcp-setup.md` for Claude Code, Claude Desktop, OpenClaw, and HTTP
+server configuration.
+
+## Pitfalls
+
+- **Do not stop at snippets.** Fetch documents before making claims.
+- **Do not overuse semantic search.** If you know exact titles or terms, BM25 is
+  faster and often better.
+- **Do not mutate indexes casually.** `qmd collection add`, `qmd update`, and
+  `qmd embed` change local state and can be expensive.
+- **Model-backed commands can be environment-sensitive.** If `qmd query`,
+  `qmd vsearch`, or reranking fails because local models/GPU are unavailable,
+  use `qmd search` and stronger lexical/structured terms.
+- **Ambiguous user wording needs intent.** Add `intent:` rather than hoping query
+  expansion guesses the right domain.
+- **Collection names matter.** Search `concepts` for synthesized wiki pages,
+  `sources` for transcripts/raw source pages, and docs collections for code/project
+  documentation.

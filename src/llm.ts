@@ -31,6 +31,7 @@ async function loadNodeLlamaCpp(): Promise<NodeLlamaCppModule> {
 export function setNodeLlamaCppModuleForTest(module: NodeLlamaCppModule | null): void {
   nodeLlamaCppImport = module ? Promise.resolve(module) : null;
   failedGpuInitModes.clear();
+  noGpuAccelerationWarningShown = false;
 }
 
 type StdoutWrite = typeof process.stdout.write;
@@ -83,7 +84,7 @@ export function isQwen3EmbeddingModel(modelUri: string): boolean {
  * Uses Qwen3-Embedding instruct format when a Qwen embedding model is active.
  */
 export function formatQueryForEmbedding(query: string, modelUri?: string): string {
-  const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
+  const uri = modelUri ?? resolveEmbedModel();
   if (isQwen3EmbeddingModel(uri)) {
     return `Instruct: Retrieve relevant documents for the given query\nQuery: ${query}`;
   }
@@ -96,7 +97,7 @@ export function formatQueryForEmbedding(query: string, modelUri?: string): strin
  * Qwen3-Embedding encodes documents as raw text without special prefixes.
  */
 export function formatDocForEmbedding(text: string, title?: string, modelUri?: string): string {
-  const uri = modelUri ?? process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL;
+  const uri = modelUri ?? resolveEmbedModel();
   if (isQwen3EmbeddingModel(uri)) {
     // Qwen3-Embedding: documents are raw text, no task prefix
     return title ? `${title}\n${text}` : text;
@@ -254,6 +255,32 @@ export const LFM2_INSTRUCT_MODEL = "hf:LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5
 export const DEFAULT_EMBED_MODEL_URI = DEFAULT_EMBED_MODEL;
 export const DEFAULT_RERANK_MODEL_URI = DEFAULT_RERANK_MODEL;
 export const DEFAULT_GENERATE_MODEL_URI = DEFAULT_GENERATE_MODEL;
+
+export type ModelResolutionConfig = {
+  embed?: string;
+  generate?: string;
+  rerank?: string;
+};
+
+export function resolveEmbedModel(config?: ModelResolutionConfig): string {
+  return config?.embed || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
+}
+
+export function resolveGenerateModel(config?: ModelResolutionConfig): string {
+  return config?.generate || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
+}
+
+export function resolveRerankModel(config?: ModelResolutionConfig): string {
+  return config?.rerank || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
+}
+
+export function resolveModels(config?: ModelResolutionConfig): Required<ModelResolutionConfig> {
+  return {
+    embed: resolveEmbedModel(config),
+    generate: resolveGenerateModel(config),
+    rerank: resolveRerankModel(config),
+  };
+}
 
 // Local model cache directory
 const MODEL_CACHE_DIR = process.env.XDG_CACHE_HOME
@@ -579,6 +606,7 @@ function resolveExpandContextSize(configValue?: number): number {
 }
 
 const failedGpuInitModes = new Set<LlamaGpuMode>();
+let noGpuAccelerationWarningShown = false;
 
 export class LlamaCpp implements LLM {
   private readonly _ciMode = !!process.env.CI;
@@ -610,9 +638,9 @@ export class LlamaCpp implements LLM {
 
 
   constructor(config: LlamaCppConfig = {}) {
-    this.embedModelUri = config.embedModel || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
-    this.generateModelUri = config.generateModel || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
-    this.rerankModelUri = config.rerankModel || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
+    this.embedModelUri = resolveEmbedModel({ embed: config.embedModel });
+    this.generateModelUri = resolveGenerateModel({ generate: config.generateModel });
+    this.rerankModelUri = resolveRerankModel({ rerank: config.rerankModel });
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
     this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
@@ -621,6 +649,14 @@ export class LlamaCpp implements LLM {
 
   get embedModelName(): string {
     return this.embedModelUri;
+  }
+
+  get generateModelName(): string {
+    return this.generateModelUri;
+  }
+
+  get rerankModelName(): string {
+    return this.rerankModelUri;
   }
 
   /**
@@ -760,9 +796,10 @@ export class LlamaCpp implements LLM {
         }
       }
 
-      if (llama.gpu === false) {
+      if (llama.gpu === false && !noGpuAccelerationWarningShown) {
+        noGpuAccelerationWarningShown = true;
         process.stderr.write(
-          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'qmd status' for details.\n"
+          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'QMD_STATUS_DEVICE_PROBE=1 qmd status' for device details.\n"
         );
       }
       this.llama = llama;

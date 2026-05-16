@@ -78,7 +78,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels } from "../llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -311,8 +311,8 @@ function formatETA(seconds: number): string {
 
 
 // Check index health and print warnings/tips
-function checkIndexHealth(db: Database): void {
-  const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db);
+function checkIndexHealth(db: Database, model: string = resolveEmbedModelForCli()): void {
+  const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db, model);
 
   // Warn if many docs need embedding
   if (needsEmbedding > 0) {
@@ -410,7 +410,8 @@ async function showStatus(): Promise<void> {
   // Overall stats
   const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
   const vectorCount = db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number };
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const statusEmbedModel = resolveEmbedModelForCli();
+  const needsEmbedding = getHashesNeedingEmbedding(db, undefined, statusEmbedModel);
 
   // Most recent update across all collections
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
@@ -536,18 +537,26 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
+    const activeModels = resolveModelsForCli();
     console.log(`\n${c.bold}Models${c.reset}`);
-    console.log(`  Embedding:   ${hfLink(DEFAULT_EMBED_MODEL_URI)}`);
-    console.log(`  Reranking:   ${hfLink(DEFAULT_RERANK_MODEL_URI)}`);
-    console.log(`  Generation:  ${hfLink(DEFAULT_GENERATE_MODEL_URI)}`);
+    console.log(`  Embedding:   ${hfLink(activeModels.embed)}`);
+    console.log(`  Reranking:   ${hfLink(activeModels.rerank)}`);
+    console.log(`  Generation:  ${hfLink(activeModels.generate)}`);
   }
 
   // Device / GPU info
   // Important: probing node-llama-cpp can abort the whole process on machines with
   // incompatible GPU drivers (for example Vulkan loader present but no usable driver).
-  // Keep `qmd status` safe by default and make the expensive/native probe opt-in.
-  if (process.env.QMD_STATUS_DEVICE_PROBE === "1") {
-    console.log(`\n${c.bold}Device${c.reset}`);
+  // Keep the native probe opt-in, but always show how QMD is configured and how to probe.
+  console.log(`\n${c.bold}Device${c.reset}`);
+  const configuredGpuMode = process.env.QMD_FORCE_CPU && !["false", "off", "none", "disable", "disabled", "0"].includes(process.env.QMD_FORCE_CPU.trim().toLowerCase())
+    ? "CPU forced (QMD_FORCE_CPU)"
+    : (process.env.QMD_LLAMA_GPU?.trim() || "auto");
+  console.log(`  Mode:     ${configuredGpuMode}`);
+  if (process.env.QMD_STATUS_DEVICE_PROBE !== "1") {
+    console.log(`  Status:   ${c.dim}not probed${c.reset} (set QMD_STATUS_DEVICE_PROBE=1 to test GPU/CPU backend)`);
+  } else {
+    console.log(`  Status:   probing native llama backend...`);
     try {
       const llm = getDefaultLlamaCpp();
       const device = await llm.getDeviceInfo({ allowBuild: false });
@@ -1794,7 +1803,35 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
 }
 
 export function resolveEmbedModelForCli(): string {
-  return process.env.QMD_EMBED_MODEL ?? DEFAULT_EMBED_MODEL_URI;
+  try {
+    return resolveEmbedModel(loadConfig().models);
+  } catch {
+    return resolveEmbedModel();
+  }
+}
+
+export function resolveGenerateModelForCli(): string {
+  try {
+    return resolveGenerateModel(loadConfig().models);
+  } catch {
+    return resolveGenerateModel();
+  }
+}
+
+export function resolveRerankModelForCli(): string {
+  try {
+    return resolveRerankModel(loadConfig().models);
+  } catch {
+    return resolveRerankModel();
+  }
+}
+
+function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
+  try {
+    return resolveModels(loadConfig().models);
+  } catch {
+    return resolveModels();
+  }
 }
 
 async function vectorIndex(
@@ -3531,10 +3568,11 @@ if (isMain) {
 
     case "pull": {
       const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
+      const activeModels = resolveModelsForCli();
       const models = [
-        DEFAULT_EMBED_MODEL_URI,
-        DEFAULT_GENERATE_MODEL_URI,
-        DEFAULT_RERANK_MODEL_URI,
+        activeModels.embed,
+        activeModels.generate,
+        activeModels.rerank,
       ];
       console.log(`${c.bold}Pulling models${c.reset}`);
       const results = await pullModels(models, {
