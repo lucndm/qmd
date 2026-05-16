@@ -98,6 +98,11 @@ import {
   listAllContexts,
   setConfigIndexName,
   loadConfig,
+  setConfigSource,
+  findLocalConfigPath,
+  getLocalDbPath,
+  getConfigPath,
+  configExists,
 } from "../collections.js";
 import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 
@@ -2574,11 +2579,22 @@ function parseCLI() {
     strict: false, // Allow unknown options to pass through
   });
 
-  // Select index name (default: "index")
+  // Select index name (default: "index"). If no explicit --index is supplied,
+  // a project-local .qmd/index.yaml overrides the global config/cache paths.
   const indexName = values.index as string | undefined;
   if (indexName) {
     setIndexName(indexName);
     setConfigIndexName(indexName);
+    setConfigSource();
+  } else {
+    const localConfigPath = findLocalConfigPath();
+    if (localConfigPath) {
+      setConfigSource({ configPath: localConfigPath });
+      storeDbPathOverride = getLocalDbPath(localConfigPath);
+      closeDb();
+    } else {
+      setConfigSource();
+    }
   }
 
   // Determine output format
@@ -3242,8 +3258,10 @@ if (isMain) {
       const { runBenchmark } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
       await runBenchmark(fixturePath, {
-        json: !!(cli.opts as { json?: boolean }).json,
+        json: !!cli.values.json,
         collection: Array.isArray(benchCollection) ? benchCollection[0] : benchCollection,
+        dbPath: getDbPath(),
+        configPath: configExists() ? getConfigPath() : undefined,
       });
       break;
     }

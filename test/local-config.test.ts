@@ -1,0 +1,78 @@
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, describe, expect, test } from "vitest";
+import { findLocalConfigPath, getLocalDbPath } from "../src/collections.js";
+
+const roots: string[] = [];
+
+function tempProject(): string {
+  const root = mkdtempSync(join(tmpdir(), "qmd-local-config-"));
+  roots.push(root);
+  return root;
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe("local .qmd project config", () => {
+  test("finds .qmd/index.yaml from nested working directories", () => {
+    const root = tempProject();
+    const configPath = join(root, ".qmd", "index.yaml");
+    mkdirSync(join(root, ".qmd"), { recursive: true });
+    writeFileSync(configPath, "collections: {}\n");
+    const nested = join(root, "wiki", "Shopify");
+    mkdirSync(nested, { recursive: true });
+
+    expect(findLocalConfigPath(nested)).toBe(configPath);
+  });
+
+  test("prefers index.yaml over index.yml when both exist", () => {
+    const root = tempProject();
+    mkdirSync(join(root, ".qmd"), { recursive: true });
+    const yaml = join(root, ".qmd", "index.yaml");
+    const yml = join(root, ".qmd", "index.yml");
+    writeFileSync(yaml, "collections: {}\n");
+    writeFileSync(yml, "collections: {}\n");
+
+    expect(findLocalConfigPath(root)).toBe(yaml);
+  });
+
+  test("uses .qmd/index.sqlite next to the local config", () => {
+    const root = tempProject();
+    mkdirSync(join(root, ".qmd"), { recursive: true });
+    const configPath = join(root, ".qmd", "index.yaml");
+    writeFileSync(configPath, "collections: {}\n");
+
+    expect(getLocalDbPath(configPath)).toBe(join(root, ".qmd", "index.sqlite"));
+  });
+
+  test("CLI uses local .qmd config and index instead of global cache", () => {
+    const root = tempProject();
+    mkdirSync(join(root, ".qmd"), { recursive: true });
+    mkdirSync(join(root, "docs"), { recursive: true });
+    writeFileSync(join(root, "docs", "a.md"), "# A\n\nLocal test document.\n");
+    writeFileSync(join(root, ".qmd", "index.yaml"), `collections:\n  docs:\n    path: ${JSON.stringify(join(root, "docs"))}\n    pattern: "**/*.md"\n    context:\n      /: Local test docs\n`);
+
+    const home = join(root, "home");
+    const output = execFileSync("bun", [join(process.cwd(), "src/cli/qmd.ts"), "status"], {
+      cwd: root,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: join(home, ".config"),
+        XDG_CACHE_HOME: join(home, ".cache"),
+      },
+    });
+
+    expect(output).toContain(`Index: ${join(root, ".qmd", "index.sqlite")}`);
+    expect(output).toContain("docs (qmd://docs/)");
+    expect(existsSync(join(root, ".qmd", "index.sqlite"))).toBe(true);
+    expect(existsSync(join(home, ".cache", "qmd", "index.sqlite"))).toBe(false);
+  });
+});

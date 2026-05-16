@@ -126,6 +126,34 @@ function getConfigFilePath(): string {
 }
 
 /**
+ * Find a project-local QMD config by walking upward from startDir.
+ * The local config lives at .qmd/index.yaml or .qmd/index.yml and,
+ * when used by the CLI, keeps both config and index DB writes inside
+ * the project instead of the global ~/.config / ~/.cache locations.
+ */
+export function findLocalConfigPath(startDir: string = process.cwd()): string | undefined {
+  let dir = resolve(startDir);
+
+  while (true) {
+    const qmdDir = join(dir, ".qmd");
+    const yamlPath = join(qmdDir, "index.yaml");
+    if (existsSync(yamlPath)) return yamlPath;
+
+    const ymlPath = join(qmdDir, "index.yml");
+    if (existsSync(ymlPath)) return ymlPath;
+
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** Return the local SQLite index path paired with a local .qmd/index.yaml file. */
+export function getLocalDbPath(configPath: string): string {
+  return join(dirname(configPath), "index.sqlite");
+}
+
+/**
  * Ensure config directory exists
  */
 function ensureConfigDir(): void {
