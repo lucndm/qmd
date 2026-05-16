@@ -17,6 +17,7 @@
   "files": [
     "bin/",
     "dist/",
+    "skills/",
     "scripts/check-package-grammars.mjs",
     "LICENSE",
     "CHANGELOG.md"

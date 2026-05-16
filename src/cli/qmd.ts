@@ -3,9 +3,9 @@ import type { Database } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
-import { dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
+import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
-import { readFileSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -104,7 +104,6 @@ import {
   getConfigPath,
   configExists,
 } from "../collections.js";
-import { getEmbeddedQmdSkillContent, getEmbeddedQmdSkillFiles } from "../embedded-skills.js";
 
 // NOTE: enableProductionMode() is intentionally NOT called at module scope here.
 // Importing this module for its exports (e.g. buildEditorUri, termLink from
@@ -2742,14 +2741,158 @@ function removePath(path: string): void {
   }
 }
 
+type SkillInfo = {
+  name: string;
+  description: string;
+  dir: string;
+  hidden: boolean;
+};
+
+const SKILL_DIR = "skills";
+
+function findPackageRoot(): string | null {
+  if (process.env.QMD_SKILLS_DIR) {
+    return null;
+  }
+
+  const start = dirname(fileURLToPath(import.meta.url));
+  let current = start;
+  while (true) {
+    if (existsSync(resolve(current, SKILL_DIR))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function getSkillSearchDirs(_runtimeOnly = false): string[] {
+  if (process.env.QMD_SKILLS_DIR) {
+    return [process.env.QMD_SKILLS_DIR];
+  }
+
+  const root = findPackageRoot();
+  if (!root) return [];
+
+  const dir = resolve(root, SKILL_DIR);
+  return existsSync(dir) ? [dir] : [];
+}
+
+function parseSkillFrontmatter(content: string): { name: string; description: string; hidden: boolean } | null {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith("---")) return null;
+  const end = trimmed.slice(3).indexOf("\n---");
+  if (end < 0) return null;
+
+  const frontmatter = trimmed.slice(3, 3 + end);
+  let name = "";
+  let description = "";
+  let hidden = false;
+  const lines = frontmatter.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("name:")) {
+      name = line.slice("name:".length).trim();
+    } else if (line.startsWith("description:")) {
+      const parts = [line.slice("description:".length).trim()];
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1]!)) {
+        i++;
+        parts.push(lines[i]!.trim());
+      }
+      description = parts.join(" ");
+    } else if (line.startsWith("hidden:")) {
+      const value = line.slice("hidden:".length).trim().toLowerCase();
+      hidden = value === "true" || value === "yes";
+    }
+  }
+
+  if (!name) return null;
+  return { name, description, hidden };
+}
+
+function discoverSkills(runtimeOnly = false): SkillInfo[] {
+  const skills: SkillInfo[] = [];
+  for (const dir of getSkillSearchDirs(runtimeOnly)) {
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const skillDir = resolve(dir, entry);
+      const skillPath = resolve(skillDir, "SKILL.md");
+      if (!existsSync(skillPath)) continue;
+      let content = "";
+      try {
+        content = readFileSync(skillPath, "utf-8");
+      } catch {
+        continue;
+      }
+      const parsed = parseSkillFrontmatter(content);
+      if (!parsed) continue;
+      skills.push({ ...parsed, dir: skillDir });
+    }
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function findSkill(name: string, runtimeOnly = false): SkillInfo | null {
+  return discoverSkills(runtimeOnly).find((skill) => skill.name === name) ?? null;
+}
+
+function readSkillContent(skill: SkillInfo): string {
+  return readFileSync(resolve(skill.dir, "SKILL.md"), "utf-8");
+}
+
+function collectSkillFiles(skill: SkillInfo): { relativePath: string; content: string }[] {
+  const files: { relativePath: string; content: string }[] = [];
+  for (const subdirName of ["references", "templates", "scripts"]) {
+    const subdir = resolve(skill.dir, subdirName);
+    if (!existsSync(subdir)) continue;
+    for (const entry of readdirSync(subdir).sort()) {
+      const filePath = resolve(subdir, entry);
+      try {
+        if (!statSync(filePath).isFile()) continue;
+        files.push({ relativePath: `${subdirName}/${basename(filePath)}`, content: readFileSync(filePath, "utf-8") });
+      } catch {
+        // Ignore unreadable supplementary files.
+      }
+    }
+  }
+  return files;
+}
+
 function showSkill(): void {
-  console.log("QMD Skill (embedded)");
+  const skill = findSkill("qmd");
+  if (!skill) {
+    throw new Error("QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.");
+  }
+  console.log("QMD Skill");
   console.log("");
-  const content = getEmbeddedQmdSkillContent();
+  const content = readSkillContent(skill);
   process.stdout.write(content.endsWith("\n") ? content : content + "\n");
 }
 
-function writeEmbeddedSkill(targetDir: string, force: boolean): void {
+function copyDirectoryContents(sourceDir: string, targetDir: string): void {
+  mkdirSync(targetDir, { recursive: true });
+  for (const entry of readdirSync(sourceDir)) {
+    const sourcePath = resolve(sourceDir, entry);
+    const targetPath = resolve(targetDir, entry);
+    const stat = statSync(sourcePath);
+    if (stat.isDirectory()) {
+      copyDirectoryContents(sourcePath, targetPath);
+    } else if (stat.isFile()) {
+      copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+
+function writeSkillInstall(targetDir: string, force: boolean): void {
   if (pathExists(targetDir)) {
     if (!force) {
       throw new Error(`Skill already exists: ${targetDir} (use --force to replace it)`);
@@ -2757,12 +2900,121 @@ function writeEmbeddedSkill(targetDir: string, force: boolean): void {
     removePath(targetDir);
   }
 
-  mkdirSync(targetDir, { recursive: true });
-  for (const file of getEmbeddedQmdSkillFiles()) {
-    const destination = resolve(targetDir, file.relativePath);
-    mkdirSync(dirname(destination), { recursive: true });
-    writeFileSync(destination, file.content, "utf-8");
+  const skill = findSkill("qmd");
+  if (!skill) {
+    throw new Error("QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.");
   }
+
+  copyDirectoryContents(skill.dir, targetDir);
+}
+
+function outputSkillsJson(payload: unknown): void {
+  console.log(JSON.stringify(payload));
+}
+
+function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false, allOption = false): void {
+  const subcommand = args[0] ?? "list";
+  const runtimeSkills = () => discoverSkills(true).filter((skill) => !skill.hidden);
+
+  switch (subcommand) {
+    case "list": {
+      const skills = runtimeSkills();
+      if (jsonMode) {
+        outputSkillsJson({ success: true, data: skills.map(({ name, description }) => ({ name, description })) });
+        return;
+      }
+      if (skills.length === 0) {
+        console.log("No skills found");
+        return;
+      }
+      const maxName = Math.max(...skills.map((skill) => skill.name.length));
+      for (const skill of skills) {
+        console.log(`  ${skill.name.padEnd(maxName)}  ${skill.description}`);
+      }
+      return;
+    }
+
+    case "get": {
+      const full = fullOption || args.includes("--full");
+      const getAll = allOption || args.includes("--all");
+      const names = args.slice(1).filter((arg) => arg !== "--full" && arg !== "--all");
+      const targets = getAll ? runtimeSkills() : names.map((name) => {
+        const skill = findSkill(name, true);
+        if (!skill) {
+          throw new Error(`Skill not found: ${name}`);
+        }
+        return skill;
+      });
+
+      if (targets.length === 0) {
+        throw new Error("No skill name provided. Usage: qmd skills get <name>");
+      }
+
+      if (jsonMode) {
+        outputSkillsJson({
+          success: true,
+          data: targets.map((skill) => ({
+            name: skill.name,
+            content: readSkillContent(skill),
+            ...(full ? { files: collectSkillFiles(skill).map((file) => ({ path: file.relativePath, content: file.content })) } : {}),
+          })),
+        });
+        return;
+      }
+
+      targets.forEach((skill, index) => {
+        if (index > 0) console.log("\n---\n");
+        const content = readSkillContent(skill);
+        process.stdout.write(content.endsWith("\n") ? content : content + "\n");
+        if (full) {
+          for (const file of collectSkillFiles(skill)) {
+            console.log(`\n--- ${file.relativePath} ---\n`);
+            process.stdout.write(file.content.endsWith("\n") ? file.content : file.content + "\n");
+          }
+        }
+      });
+      return;
+    }
+
+    case "path": {
+      const name = args[1];
+      if (!name) {
+        const paths = getSkillSearchDirs(true);
+        if (jsonMode) outputSkillsJson({ success: true, data: { paths } });
+        else paths.forEach((path) => console.log(path));
+        return;
+      }
+      const skill = findSkill(name, true);
+      if (!skill) {
+        throw new Error(`Skill not found: ${name}`);
+      }
+      if (jsonMode) outputSkillsJson({ success: true, data: { name: skill.name, path: skill.dir } });
+      else console.log(skill.dir);
+      return;
+    }
+
+    case "help": {
+      showSkillsHelp();
+      return;
+    }
+
+    default:
+      throw new Error(`Unknown skills subcommand: ${subcommand}`);
+  }
+}
+
+function showSkillsHelp(): void {
+  console.log("Usage: qmd skills <list|get|path> [options]");
+  console.log("");
+  console.log("Commands:");
+  console.log("  list                 List bundled runtime skills");
+  console.log("  get <name>           Print a bundled runtime skill");
+  console.log("  get <name> --full    Include references/templates/scripts");
+  console.log("  get --all            Print all bundled runtime skills");
+  console.log("  path [name]          Print runtime skill directory path(s)");
+  console.log("");
+  console.log("Options:");
+  console.log("  --json               Print structured JSON");
 }
 
 function ensureClaudeSymlink(linkPath: string, targetDir: string, force: boolean): boolean {
@@ -2822,7 +3074,7 @@ async function shouldCreateClaudeSymlink(linkPath: string, autoYes: boolean): Pr
 
 async function installSkill(globalInstall: boolean, force: boolean, autoYes: boolean): Promise<void> {
   const installDir = getSkillInstallDir(globalInstall);
-  writeEmbeddedSkill(installDir, force);
+  writeSkillInstall(installDir, force);
   console.log(`✓ Installed QMD skill to ${installDir}`);
 
   const claudeLinkPath = getClaudeSkillLinkPath(globalInstall);
@@ -2851,7 +3103,8 @@ function showHelp(): void {
   console.log("  qmd vsearch <query>           - Vector similarity only");
   console.log("  qmd get <file>[:line] [-l N]  - Show a single document, optional line slice");
   console.log("  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list");
-  console.log("  qmd skill show/install        - Show or install the packaged QMD skill");
+  console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
+  console.log("  qmd skill show/install        - Show or install the QMD skill");
   console.log("  qmd mcp                       - Start the MCP server (stdio transport for AI agents)");
   console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file");
   console.log("");
@@ -2904,6 +3157,7 @@ function showHelp(): void {
   console.log("");
   console.log("AI agents & integrations:");
   console.log("  - Run `qmd mcp` to expose the MCP server (stdio) to agents/IDEs.");
+  console.log("  - Run `qmd skills get qmd --full` for version-matched agent instructions.");
   console.log("  - `qmd skill install` installs the QMD skill into ./.agents/skills/qmd.");
   console.log("  - Use `qmd skill install --global` for ~/.agents/skills/qmd.");
   console.log("  - `qmd --skill` is kept as an alias for `qmd skill show`.");
@@ -2982,8 +3236,8 @@ if (isMain) {
     console.log("Usage: qmd skill <show|install> [options]");
     console.log("");
     console.log("Commands:");
-    console.log("  show                 Print the packaged QMD skill");
-    console.log("  install              Install into ./.agents/skills/qmd");
+    console.log("  show                 Print the QMD skill");
+    console.log("  install              Install QMD skill into ./.agents/skills/qmd");
     console.log("");
     console.log("Options:");
     console.log("  --global             Install into ~/.agents/skills/qmd");
@@ -3432,6 +3686,24 @@ if (isMain) {
       break;
     }
 
+    case "skills": {
+      try {
+        if (cli.values.help || cli.args[0] === "help") {
+          showSkillsHelp();
+        } else {
+          runSkillsCommand(cli.args, Boolean(cli.values.json), Boolean(cli.values.full), Boolean(cli.values.all));
+        }
+      } catch (error) {
+        if (cli.values.json) {
+          outputSkillsJson({ success: false, error: error instanceof Error ? error.message : String(error) });
+        } else {
+          console.error(error instanceof Error ? error.message : String(error));
+        }
+        process.exit(1);
+      }
+      break;
+    }
+
     case "skill": {
       const subcommand = cli.args[0];
       switch (subcommand) {
@@ -3455,8 +3727,8 @@ if (isMain) {
           console.log("Usage: qmd skill <show|install> [options]");
           console.log("");
           console.log("Commands:");
-          console.log("  show                 Print the packaged QMD skill");
-          console.log("  install              Install into ./.agents/skills/qmd");
+          console.log("  show                 Print the QMD skill");
+          console.log("  install              Install QMD skill into ./.agents/skills/qmd");
           console.log("");
           console.log("Options:");
           console.log("  --global             Install into ~/.agents/skills/qmd");
