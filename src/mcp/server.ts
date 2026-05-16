@@ -106,7 +106,6 @@ function getPackageVersion(): string {
  */
 async function buildInstructions(store: QMDStore): Promise<string> {
   const status = await store.getStatus();
-  const contexts = await store.listContexts();
   const globalCtx = await store.getGlobalContext();
   const lines: string[] = [];
 
@@ -115,15 +114,13 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
 
   // --- What's searchable? ---
+  // Emit names only — the per-collection doc counts and descriptions can run to ~1.5 KB
+  // across a dozen collections, and the same info is available on demand via the `status` tool.
   if (status.collections.length > 0) {
     lines.push("");
-    lines.push("Collections (scope with `collection` parameter):");
-    for (const col of status.collections) {
-      // Find root context for this collection
-      const rootCtx = contexts.find(c => c.collection === col.name && (c.path === "" || c.path === "/"));
-      const desc = rootCtx ? ` — ${rootCtx.context}` : "";
-      lines.push(`  - "${col.name}" (${col.documents} docs)${desc}`);
-    }
+    const names = status.collections.map(c => c.name).join(", ");
+    lines.push(`Collections (scope with \`collection\` parameter): ${names}`);
+    lines.push("Call the `status` tool for collection descriptions, paths, and per-collection doc counts.");
   }
 
   // --- Capability gaps ---
