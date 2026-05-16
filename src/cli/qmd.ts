@@ -1806,7 +1806,7 @@ async function vectorIndex(
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection);
+  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection, model);
   if (hashesToEmbed === 0 && !force) {
     console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
     closeDb();

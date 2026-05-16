@@ -2281,6 +2281,26 @@ describe("Index Status", () => {
     await cleanupTestDb(store);
   });
 
+  test("embedding health is scoped to the active embed model", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const activeModel = "hf:active/embed-model.gguf";
+    const staleModel = "hf:stale/embed-model.gguf";
+    const now = new Date().toISOString();
+
+    store.llm = { embedModelName: activeModel } as any;
+    store.ensureVecTable(3);
+    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
+    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), staleModel, now, 1);
+
+    expect(store.getHashesNeedingEmbedding()).toBe(1);
+    expect(store.getStatus().needsEmbedding).toBe(1);
+    expect(store.getIndexHealth().needsEmbedding).toBe(1);
+    expect(store.getHashesNeedingEmbedding(staleModel)).toBe(0);
+
+    await cleanupTestDb(store);
+  });
+
   test("getIndexHealth returns health info", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -3088,6 +3108,68 @@ describe("Embedding batching", () => {
       expect(fakeLlm.embedBatchModelCalls).toEqual([{ model }]);
       expect(db.prepare(`SELECT DISTINCT model FROM content_vectors`).all()).toEqual([{ model }]);
     } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings does not mark a partially embedded multi-chunk document complete", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = {
+      async embed(_text: string, _options?: { model?: string }) {
+        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+      },
+      async embedBatch(texts: string[], _options?: { model?: string }) {
+        return texts.map((_text, index) => index === 0
+          ? { embedding: [1, 2, 3], model: "fake-embed" }
+          : null
+        );
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      await insertTestDocument(db, "docs", {
+        name: "long-doc",
+        body: "# Long doc\n\n" + "partial embedding regression ".repeat(260),
+      });
+
+      const result = await generateEmbeddings(store);
+
+      expect(result.errors).toBeGreaterThan(0);
+      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 0 });
+      expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 0 });
+      expect(store.getHashesNeedingEmbedding()).toBe(1);
+      expect(store.getStatus().needsEmbedding).toBe(1);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings opens a long-lived LLM session for embed runs", async () => {
+    const store = await createTestStore();
+    const fakeLlm = createFakeEmbedLlm();
+    const sessionSpy = vi.spyOn(llmModule, "withLLMSessionForLlm");
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      await insertTestDocument(store.db, "docs", { name: "one", body: "# One\n\nAlpha" });
+
+      await generateEmbeddings(store);
+
+      expect(sessionSpy).toHaveBeenCalledWith(
+        fakeLlm,
+        expect.any(Function),
+        expect.objectContaining({ maxDuration: 30 * 60 * 1000, name: "generateEmbeddings" }),
+      );
+    } finally {
+      sessionSpy.mockRestore();
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
     }
