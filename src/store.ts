@@ -50,6 +50,10 @@ export const DEFAULT_MULTI_GET_MAX_BYTES = 10 * 1024; // 10KB
 export const DEFAULT_EMBED_MAX_DOCS_PER_BATCH = 64;
 export const DEFAULT_EMBED_MAX_BATCH_BYTES = 64 * 1024 * 1024; // 64MB
 
+const EMBED_FINGERPRINT_PROBE_QUERY = "__qmd_embedding_query_probe__";
+const EMBED_FINGERPRINT_PROBE_TITLE = "__qmd_embedding_title_probe__";
+const EMBED_FINGERPRINT_PROBE_DOC = "__qmd_embedding_document_probe__";
+
 // Chunking: 900 tokens per chunk with 15% overlap
 // Increased from 800 to accommodate smart chunking finding natural break points
 export const CHUNK_SIZE_TOKENS = 900;
@@ -60,6 +64,17 @@ export const CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4;  // 540 chars
 // Search window for finding optimal break points (in tokens, ~200 tokens)
 export const CHUNK_WINDOW_TOKENS = 200;
 export const CHUNK_WINDOW_CHARS = CHUNK_WINDOW_TOKENS * 4;  // 800 chars
+
+export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): string {
+  const significant = [
+    `model:${model}`,
+    `query:${formatQueryForEmbedding(EMBED_FINGERPRINT_PROBE_QUERY, model)}`,
+    `doc:${formatDocForEmbedding(EMBED_FINGERPRINT_PROBE_DOC, EMBED_FINGERPRINT_PROBE_TITLE, model)}`,
+    `chunk_tokens:${CHUNK_SIZE_TOKENS}`,
+    `chunk_overlap_tokens:${CHUNK_OVERLAP_TOKENS}`,
+  ].join("\n");
+  return createHash("sha256").update(significant).digest("hex").slice(0, 6);
+}
 
 /**
  * Get the LlamaCpp instance for a store — prefers the store's own instance,
@@ -861,28 +876,20 @@ function initializeDatabase(db: Database): void {
     )
   `);
 
-  // Content vectors
-  const cvInfo = db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-  const hasSeqColumn = cvInfo.some(col => col.name === 'seq');
-  if (cvInfo.length > 0 && !hasSeqColumn) {
-    db.exec(`DROP TABLE IF EXISTS content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
-  }
+  // Content vectors. Avoid PRAGMA schema probes during startup; legacy vector
+  // columns are repaired lazily when a vector/embedding query first needs them.
   db.exec(`
     CREATE TABLE IF NOT EXISTS content_vectors (
       hash TEXT NOT NULL,
       seq INTEGER NOT NULL DEFAULT 0,
       pos INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
+      embed_fingerprint TEXT NOT NULL DEFAULT '',
       total_chunks INTEGER NOT NULL DEFAULT 1,
       embedded_at TEXT NOT NULL,
       PRIMARY KEY (hash, seq)
     )
   `);
-  const cvInfoAfterCreate = db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-  if (!cvInfoAfterCreate.some(col => col.name === 'total_chunks')) {
-    db.exec(`ALTER TABLE content_vectors ADD COLUMN total_chunks INTEGER NOT NULL DEFAULT 1`);
-  }
 
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
@@ -1237,7 +1244,7 @@ export type Store = {
   // Vector/embedding operations
   getHashesForEmbedding: () => { hash: string; body: string; path: string }[];
   clearAllEmbeddings: () => void;
-  insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number) => void;
+  insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number, fingerprint?: string) => void;
 };
 
 // =============================================================================
@@ -1428,31 +1435,77 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
   };
 }
 
-function contentVectorExpectedChunksExpr(db: Database): string {
-  const columns = db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
-  return columns.some(col => col.name === 'total_chunks') ? 'MAX(total_chunks)' : '1';
+function contentVectorSchemaRepairFor(error: unknown): "embed_fingerprint" | "total_chunks" | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("no such column: embed_fingerprint") ||
+    message.includes("has no column named embed_fingerprint")
+  ) {
+    return "embed_fingerprint";
+  }
+  if (
+    message.includes("no such column: total_chunks") ||
+    message.includes("has no column named total_chunks")
+  ) {
+    return "total_chunks";
+  }
+  return null;
+}
+
+function repairContentVectorColumn(db: Database, column: "embed_fingerprint" | "total_chunks"): void {
+  try {
+    if (column === "embed_fingerprint") {
+      db.exec(`ALTER TABLE content_vectors ADD COLUMN embed_fingerprint TEXT NOT NULL DEFAULT ''`);
+    } else {
+      db.exec(`ALTER TABLE content_vectors ADD COLUMN total_chunks INTEGER NOT NULL DEFAULT 1`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Another caller may have already repaired the column between error and ALTER.
+    if (!message.includes("duplicate column name")) {
+      throw error;
+    }
+  }
+}
+
+function withLazyContentVectorMigration<T>(db: Database, operation: () => T): T {
+  const repaired = new Set<string>();
+  while (true) {
+    try {
+      return operation();
+    } catch (error) {
+      const column = contentVectorSchemaRepairFor(error);
+      if (!column || repaired.has(column)) {
+        throw error;
+      }
+      repairContentVectorColumn(db, column);
+      repaired.add(column);
+    }
+  }
 }
 
 function getPendingEmbeddingDocs(db: Database, collection?: string, model: string = DEFAULT_EMBED_MODEL): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
-  const expectedChunksExpr = contentVectorExpectedChunksExpr(db);
-  const stmt = db.prepare(`
-    SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
-    FROM documents d
-    JOIN content c ON d.hash = c.hash
-    LEFT JOIN (
-      SELECT hash, model, COUNT(*) AS chunk_count, ${expectedChunksExpr} AS expected_chunks
-      FROM content_vectors
-      WHERE model = ?
-      GROUP BY hash, model
-    ) v ON d.hash = v.hash
-    WHERE d.active = 1
-      AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
-      ${collectionFilter}
-    GROUP BY d.hash
-    ORDER BY MIN(d.path)
-  `);
-  return (collection ? stmt.all(model, collection) : stmt.all(model)) as PendingEmbeddingDoc[];
+  const fingerprint = getEmbeddingFingerprint(model);
+  return withLazyContentVectorMigration(db, () => {
+    const stmt = db.prepare(`
+      SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      LEFT JOIN (
+        SELECT hash, model, COUNT(*) AS chunk_count, MAX(total_chunks) AS expected_chunks
+        FROM content_vectors
+        WHERE model = ? AND embed_fingerprint = ?
+        GROUP BY hash, model, embed_fingerprint
+      ) v ON d.hash = v.hash
+      WHERE d.active = 1
+        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
+        ${collectionFilter}
+      GROUP BY d.hash
+      ORDER BY MIN(d.path)
+    `);
+    return (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+  });
 }
 
 function buildEmbeddingBatches(
@@ -1515,6 +1568,7 @@ export async function generateEmbeddings(
   const db = store.db;
   const llm = getLlm(store);
   const model = options?.model ?? llm.embedModelName ?? DEFAULT_EMBED_MODEL;
+  const fingerprint = getEmbeddingFingerprint(model);
   const now = new Date().toISOString();
   const { maxDocsPerBatch, maxBatchBytes } = resolveEmbedOptions(options);
   const encoder = new TextEncoder();
@@ -1633,7 +1687,7 @@ export async function generateEmbeddings(
             const chunk = chunkBatch[i]!;
             const embedding = embeddings[i];
             if (embedding) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now, expectedChunksByHash.get(chunk.hash) ?? 1);
+              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now, expectedChunksByHash.get(chunk.hash) ?? 1, fingerprint);
               chunksEmbedded++;
             } else {
               errors++;
@@ -1652,7 +1706,7 @@ export async function generateEmbeddings(
                 const text = formatDocForEmbedding(chunk.text, chunk.title, embedModelUri);
                 const result = await session.embed(text, { model });
                 if (result) {
-                  insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now, expectedChunksByHash.get(chunk.hash) ?? 1);
+                  insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now, expectedChunksByHash.get(chunk.hash) ?? 1, fingerprint);
                   chunksEmbedded++;
                 } else {
                   errors++;
@@ -1778,7 +1832,7 @@ export function createStore(dbPath?: string): Store {
     // Vector/embedding operations
     getHashesForEmbedding: () => getHashesForEmbedding(db),
     clearAllEmbeddings: () => clearAllEmbeddings(db),
-    insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number) => insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt, totalChunks),
+    insertEmbedding: (hash: string, seq: number, pos: number, embedding: Float32Array, model: string, embeddedAt: string, totalChunks?: number, fingerprint?: string) => insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt, totalChunks, fingerprint),
   };
 
   return store;
@@ -1979,22 +2033,24 @@ export type IndexStatus = {
 
 export function getHashesNeedingEmbedding(db: Database, collection?: string, model: string = DEFAULT_EMBED_MODEL): number {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
-  const expectedChunksExpr = contentVectorExpectedChunksExpr(db);
-  const stmt = db.prepare(`
-    SELECT COUNT(DISTINCT d.hash) as count
-    FROM documents d
-    LEFT JOIN (
-      SELECT hash, model, COUNT(*) AS chunk_count, ${expectedChunksExpr} AS expected_chunks
-      FROM content_vectors
-      WHERE model = ?
-      GROUP BY hash, model
-    ) v ON d.hash = v.hash
-    WHERE d.active = 1
-      AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
-      ${collectionFilter}
-  `);
-  const result = (collection ? stmt.get(model, collection) : stmt.get(model)) as { count: number };
-  return result.count;
+  const fingerprint = getEmbeddingFingerprint(model);
+  return withLazyContentVectorMigration(db, () => {
+    const stmt = db.prepare(`
+      SELECT COUNT(DISTINCT d.hash) as count
+      FROM documents d
+      LEFT JOIN (
+        SELECT hash, model, COUNT(*) AS chunk_count, MAX(total_chunks) AS expected_chunks
+        FROM content_vectors
+        WHERE model = ? AND embed_fingerprint = ?
+        GROUP BY hash, model, embed_fingerprint
+      ) v ON d.hash = v.hash
+      WHERE d.active = 1
+        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
+        ${collectionFilter}
+    `);
+    const result = (collection ? stmt.get(model, fingerprint, collection) : stmt.get(model, fingerprint)) as { count: number };
+    return result.count;
+  });
 }
 
 export type IndexHealthInfo = {
@@ -2002,6 +2058,79 @@ export type IndexHealthInfo = {
   totalDocs: number;
   daysStale: number | null;
 };
+
+export type LegacyFingerprintAdoptionResult = {
+  checked: boolean;
+  adopted: number;
+  reason: string;
+};
+
+export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: string = DEFAULT_EMBED_MODEL): Promise<LegacyFingerprintAdoptionResult> {
+  const db = store.db;
+  const fingerprint = getEmbeddingFingerprint(model);
+  const legacyCount = withLazyContentVectorMigration(db, () => {
+    const row = db.prepare(`SELECT COUNT(DISTINCT hash) AS count FROM content_vectors WHERE model = ? AND embed_fingerprint = ''`).get(model) as { count: number };
+    return row.count;
+  });
+  if (legacyCount === 0) {
+    return { checked: false, adopted: 0, reason: "no legacy empty-fingerprint embeddings" };
+  }
+
+  const sample = db.prepare(`
+    SELECT cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc AS body, MIN(d.path) AS path
+    FROM content_vectors cv
+    JOIN documents d ON d.hash = cv.hash AND d.active = 1
+    JOIN content c ON c.hash = cv.hash
+    WHERE cv.model = ? AND cv.embed_fingerprint = ''
+    GROUP BY cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc
+    ORDER BY cv.hash, cv.seq
+    LIMIT 1
+  `).get(model) as { hash: string; seq: number; pos: number; total_chunks: number; body: string; path: string } | undefined;
+
+  if (!sample) {
+    return { checked: false, adopted: 0, reason: `${legacyCount} legacy docs have no active sample` };
+  }
+
+  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  if (!tableExists) {
+    return { checked: false, adopted: 0, reason: "vectors_vec table is missing" };
+  }
+
+  const expectedHashSeq = `${sample.hash}_${sample.seq}`;
+  const title = extractTitle(sample.body, sample.path);
+  const llm = getLlm(store);
+
+  return await withLLMSessionForLlm(llm, async (session) => {
+    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunk = chunks[sample.seq];
+    if (!chunk) {
+      return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
+    }
+
+    const result = await session.embed(formatDocForEmbedding(chunk.text, title, model), { model });
+    if (!result) {
+      return { checked: true, adopted: 0, reason: "failed to embed legacy sample" };
+    }
+
+    const nearest = db.prepare(`
+      SELECT hash_seq, distance
+      FROM vectors_vec
+      WHERE embedding MATCH ? AND k = 1
+    `).get(new Float32Array(result.embedding)) as { hash_seq: string; distance: number } | undefined;
+
+    if (!nearest) {
+      return { checked: true, adopted: 0, reason: "legacy sample vector not found" };
+    }
+
+    const threshold = 0.0001;
+    if (nearest.hash_seq !== expectedHashSeq || nearest.distance > threshold) {
+      return { checked: true, adopted: 0, reason: `legacy sample differs from current fingerprint (nearest ${nearest.hash_seq}, distance ${nearest.distance.toFixed(6)})` };
+    }
+
+    const update = db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model);
+    return { checked: true, adopted: update.changes, reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}` };
+  });
+}
 
 export function getIndexHealth(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexHealthInfo {
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
@@ -3353,21 +3482,21 @@ async function getEmbedding(text: string, model: string, isQuery: boolean, sessi
  * Returns hash, document body, and a sample path for display purposes.
  */
 export function getHashesForEmbedding(db: Database, model: string = DEFAULT_EMBED_MODEL): { hash: string; body: string; path: string }[] {
-  const expectedChunksExpr = contentVectorExpectedChunksExpr(db);
-  return db.prepare(`
+  const fingerprint = getEmbeddingFingerprint(model);
+  return withLazyContentVectorMigration(db, () => db.prepare(`
     SELECT d.hash, c.doc as body, MIN(d.path) as path
     FROM documents d
     JOIN content c ON d.hash = c.hash
     LEFT JOIN (
-      SELECT hash, model, COUNT(*) AS chunk_count, ${expectedChunksExpr} AS expected_chunks
+      SELECT hash, model, COUNT(*) AS chunk_count, MAX(total_chunks) AS expected_chunks
       FROM content_vectors
-      WHERE model = ?
-      GROUP BY hash, model
+      WHERE model = ? AND embed_fingerprint = ?
+      GROUP BY hash, model, embed_fingerprint
     ) v ON d.hash = v.hash
     WHERE d.active = 1
       AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
     GROUP BY d.hash
-  `).all(model) as { hash: string; body: string; path: string }[];
+  `).all(model, fingerprint) as { hash: string; body: string; path: string }[]);
 }
 
 /**
@@ -3453,19 +3582,22 @@ export function insertEmbedding(
   embedding: Float32Array,
   model: string,
   embeddedAt: string,
-  totalChunks: number = 1
+  totalChunks: number = 1,
+  fingerprint: string = getEmbeddingFingerprint(model)
 ): void {
   const hashSeq = `${hash}_${seq}`;
 
-  // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-  const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?)`);
-  insertContentVectorStmt.run(hash, seq, pos, model, totalChunks, embeddedAt);
+  withLazyContentVectorMigration(db, () => {
+    // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
+    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
 
-  // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-  const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-  const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-  deleteVecStmt.run(hashSeq);
-  insertVecStmt.run(hashSeq, embedding);
+    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
+    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+    deleteVecStmt.run(hashSeq);
+    insertVecStmt.run(hashSeq, embedding);
+  });
 }
 
 function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<string, number>, model: string): number {

@@ -5,8 +5,11 @@
 ### Changes
 
 - Agent skills: add `qmd skills list|get|path` to serve version-matched runtime skill instructions from the installed CLI, and make `qmd skill install` write a stable discovery stub so installed agent skills do not go stale after QMD upgrades.
+- CLI: add `qmd doctor` for index/runtime diagnostics, including SQLite/sqlite-vec versions, embedding fingerprint freshness, mixed-fingerprint detection, safe legacy fingerprint adoption, and content-hash sampling.
 
 ### Fixes
+
+- Embedding: fingerprint vector metadata using the active embedding model and formatting/chunking parameters so stale vectors are treated as pending after search semantics change. Legacy `content_vectors` columns are migrated lazily on first vector-health/write use to preserve fast QMD startup.
 
 - Skill: expand the packaged QMD skill with retrieval-first workflows, structured query examples, wiki/source collection guidance, and safe fallbacks when model-backed search is unavailable.
 - Tests: make `bun run test` execute the local unit suite under both Node/Vitest and Bun (`test:node` + `test:bun`) so runtime-specific regressions are caught before CI.

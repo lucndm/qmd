@@ -26,6 +26,7 @@ import {
   extractTitle,
   formatQueryForEmbedding,
   formatDocForEmbedding,
+  getEmbeddingFingerprint,
   chunkDocument,
   chunkDocumentByTokens,
   chunkDocumentAsync,
@@ -311,15 +312,70 @@ describe("Store Creation", () => {
 
     // Check tables exist
     const tables = store.db.prepare(`
-      SELECT name FROM sqlite_master WHERE type='table' ORDER BY name
+      SELECT name FROM sqlite_master
+      WHERE type='table'
+      ORDER BY name
     `).all() as { name: string }[];
 
     const tableNames = tables.map(t => t.name);
     expect(tableNames).toContain("documents");
     expect(tableNames).toContain("documents_fts");
     expect(tableNames).toContain("content_vectors");
+    expect(tableNames).toContain("content");
     expect(tableNames).toContain("llm_cache");
     // Note: path_contexts table removed in favor of YAML-based context storage
+
+    await cleanupTestDb(store);
+  });
+
+  test("createStore defers content_vectors embed_fingerprint migration until embedding health needs it", async () => {
+    const dbPath = join(testDir, `legacy-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const model = "hf:test/embed-model.gguf";
+    const legacyDb = openDatabase(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE content (
+        hash TEXT PRIMARY KEY,
+        doc TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection TEXT NOT NULL,
+        path TEXT NOT NULL,
+        title TEXT,
+        hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        modified_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (hash) REFERENCES content(hash) ON DELETE CASCADE,
+        UNIQUE(collection, path)
+      );
+      CREATE TABLE content_vectors (
+        hash TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0,
+        pos INTEGER NOT NULL DEFAULT 0,
+        model TEXT NOT NULL,
+        total_chunks INTEGER NOT NULL DEFAULT 1,
+        embedded_at TEXT NOT NULL,
+        PRIMARY KEY (hash, seq)
+      )
+    `);
+    const now = new Date().toISOString();
+    legacyDb.prepare(`INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)`).run("hash1", "# Legacy\nbody", now);
+    legacyDb.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES (?, ?, ?, ?, ?, ?, 1)`).run("test", "legacy.md", "Legacy", "hash1", now, now);
+    legacyDb.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?)`).run("hash1", 0, 0, model, 1, now);
+    legacyDb.close();
+
+    const store = createStore(dbPath);
+    let columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
+    expect(columns.map(col => col.name)).not.toContain("embed_fingerprint");
+
+    expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+
+    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
+    const migratedRow = store.db.prepare(`SELECT embed_fingerprint FROM content_vectors WHERE hash = ?`).get("hash1") as { embed_fingerprint: string };
+    expect(columns.map(col => col.name)).toContain("embed_fingerprint");
+    expect(migratedRow.embed_fingerprint).toBe("");
 
     await cleanupTestDb(store);
   });
@@ -2297,6 +2353,23 @@ describe("Index Status", () => {
     expect(store.getStatus().needsEmbedding).toBe(1);
     expect(store.getIndexHealth().needsEmbedding).toBe(1);
     expect(store.getHashesNeedingEmbedding(staleModel)).toBe(0);
+
+    await cleanupTestDb(store);
+  });
+
+  test("embedding health treats stale fingerprints as needing re-embedding", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const model = "hf:test/embed-model.gguf";
+    const now = new Date().toISOString();
+
+    store.llm = { embedModelName: model } as any;
+    store.ensureVecTable(3);
+    await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
+    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), model, now, 1, "stale1");
+
+    expect(getEmbeddingFingerprint(model)).toMatch(/^[a-f0-9]{6}$/);
+    expect(store.getHashesNeedingEmbedding()).toBe(1);
 
     await cleanupTestDb(store);
   });

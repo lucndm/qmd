@@ -1,4 +1,4 @@
-import { openDatabase } from "../db.js";
+import { isBun, openDatabase } from "../db.js";
 import type { Database } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
@@ -31,6 +31,7 @@ import {
   hashContent,
   extractTitle,
   formatDocForEmbedding,
+  getEmbeddingFingerprint,
   chunkDocumentByTokens,
   clearCache,
   getCacheKey,
@@ -74,6 +75,7 @@ import {
   getDefaultDbPath,
   reindexCollection,
   generateEmbeddings,
+  maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
   type ReindexResult,
   type ChunkStrategy,
@@ -3228,10 +3230,103 @@ function showHelp(): void {
   console.log(`Index: ${getDbPath()}`);
 }
 
-async function showVersion(): Promise<void> {
+function doctorCheck(label: string, ok: boolean, details: string): void {
+  const mark = ok ? `${c.green}✓${c.reset}` : `${c.yellow}⚠${c.reset}`;
+  console.log(`${mark} ${label}: ${details}`);
+}
+
+async function showDoctor(): Promise<void> {
+  const storeInstance = getStore();
+  const db = storeInstance.db;
+  const pkg = readPackageJson();
+  const embedModel = resolveEmbedModelForCli();
+  const fingerprint = getEmbeddingFingerprint(embedModel);
+
+  console.log(`${c.bold}QMD Doctor${c.reset}\n`);
+  console.log(`Index: ${getDbPath()}`);
+  console.log(`Runtime: ${isBun ? "bun:sqlite" : "better-sqlite3"}`);
+
+  try {
+    const row = db.prepare(`SELECT sqlite_version() AS version`).get() as { version: string };
+    doctorCheck("SQLite runtime", true, row.version);
+  } catch (error) {
+    doctorCheck("SQLite runtime", false, error instanceof Error ? error.message : String(error));
+  }
+
+  const betterSqliteVersion = pkg.dependencies?.["better-sqlite3"] ?? pkg.devDependencies?.["better-sqlite3"] ?? "not declared";
+  doctorCheck("better_sqlite version", true, String(betterSqliteVersion));
+
+  try {
+    const row = db.prepare(`SELECT vec_version() AS version`).get() as { version: string };
+    doctorCheck("sqlite-vec", true, row.version);
+  } catch (error) {
+    doctorCheck("sqlite-vec", false, error instanceof Error ? error.message : String(error));
+  }
+
+  try {
+    const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
+    if (adoption.checked || adoption.adopted > 0) {
+      doctorCheck("legacy fingerprint adoption", adoption.adopted > 0, adoption.adopted > 0 ? `adopted ${adoption.adopted} legacy chunks; ${adoption.reason}` : adoption.reason);
+    }
+  } catch (error) {
+    doctorCheck("legacy fingerprint adoption", false, error instanceof Error ? error.message : String(error));
+  }
+
+  try {
+    const pending = getHashesNeedingEmbedding(db, undefined, embedModel);
+    doctorCheck("embedding freshness", pending === 0, pending === 0 ? "all active documents match current fingerprint" : `${pending} active documents need embedding`);
+  } catch (error) {
+    doctorCheck("embedding freshness", false, error instanceof Error ? error.message : String(error));
+  }
+
+  try {
+    const rows = db.prepare(`
+      SELECT model, embed_fingerprint AS fingerprint, COUNT(DISTINCT hash) AS docs, COUNT(*) AS chunks
+      FROM content_vectors
+      GROUP BY model, embed_fingerprint
+      ORDER BY chunks DESC, model, embed_fingerprint
+    `).all() as { model: string; fingerprint: string; docs: number; chunks: number }[];
+    const uniqueFingerprints = new Set(rows.map(row => row.fingerprint));
+    const offCurrent = rows.filter(row => row.model === embedModel && row.fingerprint !== fingerprint);
+    const ok = rows.length === 0 || (uniqueFingerprints.size === 1 && rows[0]?.fingerprint === fingerprint && offCurrent.length === 0);
+    const details = rows.length === 0
+      ? `none yet; current ${fingerprint}`
+      : rows.map(row => {
+          const label = row.fingerprint === fingerprint ? "current" : (row.fingerprint || "legacy");
+          return `${row.model}:${label} ${row.docs} docs/${row.chunks} chunks`;
+        }).join("; ");
+    doctorCheck("embedding fingerprints", ok, details);
+  } catch (error) {
+    doctorCheck("embedding fingerprints", false, error instanceof Error ? error.message : String(error));
+  }
+
+  const sample = db.prepare(`
+    SELECT c.hash, c.doc
+    FROM documents d
+    JOIN content c ON c.hash = d.hash
+    WHERE d.active = 1
+    ORDER BY random()
+    LIMIT 1
+  `).get() as { hash: string; doc: string } | undefined;
+  if (sample) {
+    const rehashed = await hashContent(sample.doc);
+    doctorCheck("content hash sample", rehashed === sample.hash, `${sample.hash.slice(0, 12)} ${rehashed === sample.hash ? "matches" : `!= ${rehashed.slice(0, 12)}`}`);
+  } else {
+    doctorCheck("content hash sample", true, "no active documents indexed");
+  }
+
+  closeDb();
+}
+
+function readPackageJson(): any {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const pkgPath = resolve(scriptDir, "..", "..", "package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  return JSON.parse(readFileSync(pkgPath, "utf-8"));
+}
+
+async function showVersion(): Promise<void> {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const pkg = readPackageJson();
 
   let commit = "";
   try {
@@ -3537,6 +3632,10 @@ if (isMain) {
 
     case "status":
       await showStatus();
+      break;
+
+    case "doctor":
+      await showDoctor();
       break;
 
     case "update":

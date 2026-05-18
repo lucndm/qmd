@@ -14,6 +14,7 @@ import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
 import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
+import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI } from "../src/llm.ts";
 
 // Test fixtures directory and database path
@@ -463,6 +464,32 @@ describe("CLI Status Command", () => {
   beforeEach(async () => {
     // Ensure we have indexed files
     await runQmd(["collection", "add", "."]);
+  });
+
+  test("qmd doctor reports core index health checks", async () => {
+    const { stdout, exitCode } = await runQmd(["doctor"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("QMD Doctor");
+    expect(stdout).toContain("SQLite runtime");
+    expect(stdout).toContain("sqlite-vec");
+    expect(stdout).toContain("embedding freshness");
+    expect(stdout).toContain("embedding fingerprints");
+    expect(stdout).toContain("content hash sample");
+  });
+
+  test("qmd doctor flags mixed embedding fingerprints", async () => {
+    const db = openDatabase(testDbPath);
+    const doc = db.prepare(`SELECT hash FROM documents WHERE active = 1 LIMIT 1`).get() as { hash: string };
+    db.prepare(`
+      INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES (?, 0, 0, ?, 'stale1', 1, ?)
+    `).run(doc.hash, resolveEmbedModelForCli(), new Date().toISOString());
+    db.close();
+
+    const { stdout, exitCode } = await runQmd(["doctor"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("embedding fingerprints");
+    expect(stdout).toContain("stale1");
   });
 
   test("shows index status", async () => {

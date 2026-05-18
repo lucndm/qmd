@@ -80,6 +80,7 @@ function initTestDatabase(db: Database): void {
       seq INTEGER NOT NULL DEFAULT 0,
       pos INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
+      embed_fingerprint TEXT NOT NULL DEFAULT '',
       embedded_at TEXT NOT NULL,
       PRIMARY KEY (hash, seq)
     )
@@ -186,7 +187,7 @@ function seedTestData(db: Database): void {
   for (let i = 0; i < 768; i++) embedding[i] = Math.random();
 
   for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
-    db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, now);
+    db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
     db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${doc.hash}_0`, embedding);
   }
 }
@@ -211,6 +212,7 @@ import {
   findDocuments,
   getStatus,
   DEFAULT_EMBED_MODEL,
+  getEmbeddingFingerprint,
   DEFAULT_QUERY_MODEL,
   DEFAULT_RERANK_MODEL,
   DEFAULT_MULTI_GET_MAX_BYTES,
