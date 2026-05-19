@@ -15,7 +15,7 @@ import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
 import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
 import { openDatabase } from "../src/db.ts";
-import { DEFAULT_EMBED_MODEL_URI } from "../src/llm.ts";
+import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
 
 // Test fixtures directory and database path
 let testDir: string;
@@ -472,9 +472,57 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("QMD Doctor");
     expect(stdout).toContain("SQLite runtime");
     expect(stdout).toContain("sqlite-vec");
+    expect(stdout).toContain("environment overrides");
+    expect(stdout).toContain("INDEX_PATH");
+    expect(stdout).toContain("overrides the SQLite index path");
+    expect(stdout).toContain("QMD_CONFIG_DIR");
+    expect(stdout).toContain("overrides the QMD config directory");
+    expect(stdout).toContain("model defaults");
+    expect(stdout).toContain("model cache");
+    expect(stdout).toContain("device mode");
+    expect(stdout).toContain("device probe");
     expect(stdout).toContain("embedding freshness");
     expect(stdout).toContain("embedding fingerprints");
-    expect(stdout).toContain("content hash sample");
+    expect(stdout).toContain("embedding vector sample");
+    expect(stdout).toContain("please run qmd embed again");
+
+    const configText = readFileSync(join(testConfigDir, "index.yml"), "utf-8");
+    expect(configText).toContain("models:");
+    expect(configText).toContain(DEFAULT_EMBED_MODEL_URI);
+    expect(configText).toContain(DEFAULT_GENERATE_MODEL_URI);
+    expect(configText).toContain(DEFAULT_RERANK_MODEL_URI);
+  });
+
+  test("qmd doctor warns when configured models differ from code defaults", async () => {
+    const env = await createIsolatedTestEnv("doctor-custom-models");
+    await writeFile(join(env.configDir, "index.yml"), `collections: {}\nmodels:\n  embed: hf:example/custom-embed/custom.gguf\n  generate: ${DEFAULT_GENERATE_MODEL_URI}\n  rerank: ${DEFAULT_RERANK_MODEL_URI}\n`);
+
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("model defaults");
+    expect(stdout).toContain("non-default model configuration");
+    expect(stdout).toContain("index hf:example/custom-embed/custom.gguf");
+    expect(stdout).toContain("might be ok");
+    expect(stdout).toContain("qmd pull");
+  });
+
+  test("qmd doctor says when models are overridden by env", async () => {
+    const env = await createIsolatedTestEnv("doctor-env-models");
+    await writeFile(join(env.configDir, "index.yml"), "collections: {}\n");
+
+    const customEmbed = "hf:example/env-embed/custom.gguf";
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: { QMD_EMBED_MODEL: customEmbed },
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("model defaults");
+    expect(stdout).toContain(`env QMD_EMBED_MODEL=${customEmbed}`);
+    expect(stdout).toContain("might be ok");
+    expect(stdout).toContain("environment overrides");
+    expect(stdout).toContain(`QMD_EMBED_MODEL=${customEmbed}`);
+    expect(stdout).toContain("sets the active embed model");
   });
 
   test("qmd doctor flags mixed embedding fingerprints", async () => {
@@ -1559,6 +1607,16 @@ describe("status and collection list hide filesystem paths", () => {
     // Should show qmd:// URIs
     expect(stdout).toContain(`qmd://${collName}/`);
     // Should NOT show full filesystem paths (except for the index location which is ok)
+    const lines = stdout.split('\n').filter(l => !l.includes('Index:'));
+    const pathLines = lines.filter(l => l.includes('/Users/') || l.includes('/home/') || l.includes('/tmp/'));
+    expect(pathLines.length).toBe(0);
+  });
+
+  test("doctor does not show full filesystem paths", async () => {
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+
+    expect(stdout).toContain("QMD Doctor");
     const lines = stdout.split('\n').filter(l => !l.includes('Index:'));
     const pathLines = lines.filter(l => l.includes('/Users/') || l.includes('/home/') || l.includes('/tmp/'));
     expect(pathLines.length).toBe(0);

@@ -1435,51 +1435,50 @@ function resolveEmbedOptions(options?: EmbedOptions): Required<Pick<EmbedOptions
   };
 }
 
-function contentVectorSchemaRepairFor(error: unknown): "embed_fingerprint" | "total_chunks" | null {
+const CONTENT_VECTOR_DESIRED_COLUMNS: { name: string; definition: string }[] = [
+  { name: "seq", definition: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "pos", definition: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "model", definition: "TEXT NOT NULL DEFAULT ''" },
+  { name: "embed_fingerprint", definition: "TEXT NOT NULL DEFAULT ''" },
+  { name: "total_chunks", definition: "INTEGER NOT NULL DEFAULT 1" },
+  { name: "embedded_at", definition: "TEXT NOT NULL DEFAULT ''" },
+];
+
+function isContentVectorColumnError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  if (
-    message.includes("no such column: embed_fingerprint") ||
-    message.includes("has no column named embed_fingerprint")
-  ) {
-    return "embed_fingerprint";
+  if (!/(no such column|has no column named)/i.test(message)) {
+    return false;
   }
-  if (
-    message.includes("no such column: total_chunks") ||
-    message.includes("has no column named total_chunks")
-  ) {
-    return "total_chunks";
-  }
-  return null;
+  return CONTENT_VECTOR_DESIRED_COLUMNS.some(col => message.includes(col.name));
 }
 
-function repairContentVectorColumn(db: Database, column: "embed_fingerprint" | "total_chunks"): void {
-  try {
-    if (column === "embed_fingerprint") {
-      db.exec(`ALTER TABLE content_vectors ADD COLUMN embed_fingerprint TEXT NOT NULL DEFAULT ''`);
-    } else {
-      db.exec(`ALTER TABLE content_vectors ADD COLUMN total_chunks INTEGER NOT NULL DEFAULT 1`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Another caller may have already repaired the column between error and ALTER.
-    if (!message.includes("duplicate column name")) {
-      throw error;
+function runContentVectorColumnRepairs(db: Database): void {
+  for (const column of CONTENT_VECTOR_DESIRED_COLUMNS) {
+    try {
+      db.exec(`ALTER TABLE content_vectors ADD COLUMN ${column.name} ${column.definition}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The repair series is intentionally idempotent: most columns should
+      // already exist, and another caller may have repaired a missing column
+      // between the failed query and this ALTER series.
+      if (!message.includes("duplicate column name")) {
+        throw error;
+      }
     }
   }
 }
 
 function withLazyContentVectorMigration<T>(db: Database, operation: () => T): T {
-  const repaired = new Set<string>();
+  let repaired = false;
   while (true) {
     try {
       return operation();
     } catch (error) {
-      const column = contentVectorSchemaRepairFor(error);
-      if (!column || repaired.has(column)) {
+      if (repaired || !isContentVectorColumnError(error)) {
         throw error;
       }
-      repairContentVectorColumn(db, column);
-      repaired.add(column);
+      runContentVectorColumnRepairs(db);
+      repaired = true;
     }
   }
 }
@@ -2076,7 +2075,7 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     return { checked: false, adopted: 0, reason: "no legacy empty-fingerprint embeddings" };
   }
 
-  const sample = db.prepare(`
+  const sample = withLazyContentVectorMigration(db, () => db.prepare(`
     SELECT cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc AS body, MIN(d.path) AS path
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
@@ -2085,7 +2084,7 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     GROUP BY cv.hash, cv.seq, cv.pos, cv.total_chunks, c.doc
     ORDER BY cv.hash, cv.seq
     LIMIT 1
-  `).get(model) as { hash: string; seq: number; pos: number; total_chunks: number; body: string; path: string } | undefined;
+  `).get(model) as { hash: string; seq: number; pos: number; total_chunks: number; body: string; path: string } | undefined);
 
   if (!sample) {
     return { checked: false, adopted: 0, reason: `${legacyCount} legacy docs have no active sample` };
@@ -2127,7 +2126,7 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
       return { checked: true, adopted: 0, reason: `legacy sample differs from current fingerprint (nearest ${nearest.hash_seq}, distance ${nearest.distance.toFixed(6)})` };
     }
 
-    const update = db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model);
+    const update = withLazyContentVectorMigration(db, () => db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model));
     return { checked: true, adopted: update.changes, reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}` };
   });
 }
@@ -2232,36 +2231,38 @@ export function cleanupOrphanedVectors(db: Database): number {
     return 0;
   }
 
-  // Count orphaned vectors first
-  const countResult = db.prepare(`
-    SELECT COUNT(*) as c FROM content_vectors cv
-    WHERE NOT EXISTS (
-      SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
-    )
-  `).get() as { c: number };
-
-  if (countResult.c === 0) {
-    return 0;
-  }
-
-  // Delete from vectors_vec first
-  db.exec(`
-    DELETE FROM vectors_vec WHERE hash_seq IN (
-      SELECT cv.hash || '_' || cv.seq FROM content_vectors cv
+  return withLazyContentVectorMigration(db, () => {
+    // Count orphaned vectors first
+    const countResult = db.prepare(`
+      SELECT COUNT(*) as c FROM content_vectors cv
       WHERE NOT EXISTS (
         SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
       )
-    )
-  `);
+    `).get() as { c: number };
 
-  // Delete from content_vectors
-  db.exec(`
-    DELETE FROM content_vectors WHERE hash NOT IN (
-      SELECT hash FROM documents WHERE active = 1
-    )
-  `);
+    if (countResult.c === 0) {
+      return 0;
+    }
 
-  return countResult.c;
+    // Delete from vectors_vec first
+    db.exec(`
+      DELETE FROM vectors_vec WHERE hash_seq IN (
+        SELECT cv.hash || '_' || cv.seq FROM content_vectors cv
+        WHERE NOT EXISTS (
+          SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
+        )
+      )
+    `);
+
+    // Delete from content_vectors
+    db.exec(`
+      DELETE FROM content_vectors WHERE hash NOT IN (
+        SELECT hash FROM documents WHERE active = 1
+      )
+    `);
+
+    return countResult.c;
+  });
 }
 
 /**
@@ -3426,10 +3427,10 @@ export async function searchVec(db: Database, query: string, model: string, limi
     params.push(collectionName);
   }
 
-  const docRows = db.prepare(docSql).all(...params) as {
+  const docRows = withLazyContentVectorMigration(db, () => db.prepare(docSql).all(...params) as {
     hash_seq: string; hash: string; pos: number; filepath: string;
     display_path: string; title: string; body: string;
-  }[];
+  }[]);
 
   // Combine with distances and dedupe by filepath
   const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
@@ -3538,30 +3539,32 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
     .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`)
     .get();
 
-  if (vecTableExists) {
-    const hashSeqRows = db.prepare(`
-      SELECT cv.hash, cv.seq
-      FROM content_vectors cv
-      WHERE cv.hash IN (${exclusiveHashesQuery})
-    `).all(collection) as { hash: string; seq: number }[];
+  withLazyContentVectorMigration(db, () => {
+    if (vecTableExists) {
+      const hashSeqRows = db.prepare(`
+        SELECT cv.hash, cv.seq
+        FROM content_vectors cv
+        WHERE cv.hash IN (${exclusiveHashesQuery})
+      `).all(collection) as { hash: string; seq: number }[];
 
-    const delVec = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-    for (const row of hashSeqRows) {
-      delVec.run(`${row.hash}_${row.seq}`);
+      const delVec = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+      for (const row of hashSeqRows) {
+        delVec.run(`${row.hash}_${row.seq}`);
+      }
     }
-  }
 
-  db.prepare(`
-    DELETE FROM content_vectors
-    WHERE hash IN (${exclusiveHashesQuery})
-  `).run(collection);
+    db.prepare(`
+      DELETE FROM content_vectors
+      WHERE hash IN (${exclusiveHashesQuery})
+    `).run(collection);
 
-  const remaining = db
-    .prepare(`SELECT COUNT(*) AS n FROM content_vectors`)
-    .get() as { n: number };
-  if (remaining.n === 0) {
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
-  }
+    const remaining = db
+      .prepare(`SELECT COUNT(*) AS n FROM content_vectors`)
+      .get() as { n: number };
+    if (remaining.n === 0) {
+      db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    }
+  });
 }
 
 /**
@@ -3601,23 +3604,25 @@ export function insertEmbedding(
 }
 
 function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<string, number>, model: string): number {
-  let removed = 0;
-  const rowsStmt = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ?`);
-  const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ?`);
-  const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+  return withLazyContentVectorMigration(db, () => {
+    let removed = 0;
+    const rowsStmt = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ?`);
+    const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ?`);
+    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
 
-  for (const [hash, expectedChunks] of expectedChunksByHash) {
-    const rows = rowsStmt.all(hash, model) as { seq: number }[];
-    if (rows.length === 0 || rows.length === expectedChunks) continue;
+    for (const [hash, expectedChunks] of expectedChunksByHash) {
+      const rows = rowsStmt.all(hash, model) as { seq: number }[];
+      if (rows.length === 0 || rows.length === expectedChunks) continue;
 
-    for (const row of rows) {
-      deleteVecStmt.run(`${hash}_${row.seq}`);
+      for (const row of rows) {
+        deleteVecStmt.run(`${hash}_${row.seq}`);
+      }
+      deleteContentStmt.run(hash, model);
+      removed += rows.length;
     }
-    deleteContentStmt.run(hash, model);
-    removed += rows.length;
-  }
 
-  return removed;
+    return removed;
+  });
 }
 
 // =============================================================================

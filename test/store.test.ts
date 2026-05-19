@@ -380,6 +380,59 @@ describe("Store Creation", () => {
     await cleanupTestDb(store);
   });
 
+  test("content_vectors column repair runs the full ALTER series and retries the failed operation", async () => {
+    const dbPath = join(testDir, `legacy-no-seq-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const model = "hf:test/embed-model.gguf";
+    const legacyDb = openDatabase(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE content (
+        hash TEXT PRIMARY KEY,
+        doc TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection TEXT NOT NULL,
+        path TEXT NOT NULL,
+        title TEXT,
+        hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        modified_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (hash) REFERENCES content(hash) ON DELETE CASCADE,
+        UNIQUE(collection, path)
+      );
+      CREATE TABLE content_vectors (
+        hash TEXT NOT NULL,
+        model TEXT NOT NULL,
+        embed_fingerprint TEXT NOT NULL DEFAULT '',
+        total_chunks INTEGER NOT NULL DEFAULT 1,
+        embedded_at TEXT NOT NULL
+      )
+    `);
+    legacyDb.close();
+
+    const store = createStore(dbPath);
+    let columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
+    expect(columns.map(col => col.name)).not.toContain("seq");
+    expect(columns.map(col => col.name)).not.toContain("pos");
+
+    store.ensureVecTable(3);
+    store.insertEmbedding("hash1", 1, 42, new Float32Array([1, 2, 3]), model, new Date().toISOString(), 2);
+
+    columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
+    const columnNames = columns.map(col => col.name);
+    expect(columnNames).toEqual(expect.arrayContaining(["seq", "pos", "model", "embed_fingerprint", "total_chunks", "embedded_at"]));
+    expect(store.db.prepare(`SELECT seq, pos, model, total_chunks FROM content_vectors WHERE hash = ?`).get("hash1")).toEqual({
+      seq: 1,
+      pos: 42,
+      model,
+      total_chunks: 2,
+    });
+
+    await cleanupTestDb(store);
+  });
+
   test("createStore sets WAL journal mode", async () => {
     const store = await createTestStore();
     const result = store.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };

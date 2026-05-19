@@ -5,7 +5,7 @@ import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, readSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -69,6 +69,7 @@ import {
   DEFAULT_EMBED_MAX_BATCH_BYTES,
   DEFAULT_EMBED_MAX_DOCS_PER_BATCH,
   DEFAULT_RERANK_MODEL,
+  DEFAULT_QUERY_MODEL,
   DEFAULT_GLOB,
   DEFAULT_MULTI_GET_MAX_BYTES,
   createStore,
@@ -100,6 +101,7 @@ import {
   listAllContexts,
   setConfigIndexName,
   loadConfig,
+  saveConfig,
   setConfigSource,
   findLocalConfigPath,
   getLocalDbPath,
@@ -127,15 +129,14 @@ function getStore(): ReturnType<typeof createStore> {
     store = createStore(storeDbPathOverride);
     // Sync YAML config into SQLite store_collections so store.ts reads from DB
     try {
+      const activeModels = ensureModelsConfiguredForCli();
       const config = loadConfig();
       syncConfigToDb(store.db, config);
-      if (config.models) {
-        setDefaultLlamaCpp(new LlamaCpp({
-          embedModel: config.models.embed,
-          generateModel: config.models.generate,
-          rerankModel: config.models.rerank,
-        }));
-      }
+      setDefaultLlamaCpp(new LlamaCpp({
+        embedModel: activeModels.embed,
+        generateModel: activeModels.generate,
+        rerankModel: activeModels.rerank,
+      }));
     } catch {
       // Config may not exist yet — that's fine, DB works without it
     }
@@ -392,6 +393,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function isForceCpuEnabled(): boolean {
+  const value = process.env.QMD_FORCE_CPU;
+  return !!value && !["false", "off", "none", "disable", "disabled", "0"].includes(value.trim().toLowerCase());
+}
+
+function configuredGpuModeLabel(): string {
+  return isForceCpuEnabled()
+    ? "CPU forced (QMD_FORCE_CPU)"
+    : (process.env.QMD_LLAMA_GPU?.trim() || "auto");
+}
+
+function summarizeDeviceNames(names: string[]): string {
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => count > 1 ? `${count}× ${name}` : name)
+    .join(", ");
+}
+
+function sanitizeDiagnosticMessage(message: string): string {
+  const home = homedir();
+  return message
+    .replaceAll(home, "~")
+    .replaceAll(process.cwd(), ".")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join("; ");
+}
+
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
   const db = getDb();
@@ -551,9 +585,7 @@ async function showStatus(): Promise<void> {
   // incompatible GPU drivers (for example Vulkan loader present but no usable driver).
   // Keep the native probe opt-in, but always show how QMD is configured and how to probe.
   console.log(`\n${c.bold}Device${c.reset}`);
-  const configuredGpuMode = process.env.QMD_FORCE_CPU && !["false", "off", "none", "disable", "disabled", "0"].includes(process.env.QMD_FORCE_CPU.trim().toLowerCase())
-    ? "CPU forced (QMD_FORCE_CPU)"
-    : (process.env.QMD_LLAMA_GPU?.trim() || "auto");
+  const configuredGpuMode = configuredGpuModeLabel();
   console.log(`  Mode:     ${configuredGpuMode}`);
   if (process.env.QMD_STATUS_DEVICE_PROBE !== "1") {
     console.log(`  Status:   ${c.dim}not probed${c.reset} (set QMD_STATUS_DEVICE_PROBE=1 to test GPU/CPU backend)`);
@@ -565,15 +597,7 @@ async function showStatus(): Promise<void> {
       if (device.gpu) {
         console.log(`  GPU:      ${c.green}${device.gpu}${c.reset} (offloading: ${device.gpuOffloading ? 'yes' : 'no'})`);
         if (device.gpuDevices.length > 0) {
-          // Deduplicate and count GPUs
-          const counts = new Map<string, number>();
-          for (const name of device.gpuDevices) {
-            counts.set(name, (counts.get(name) || 0) + 1);
-          }
-          const deviceStr = Array.from(counts.entries())
-            .map(([name, count]) => count > 1 ? `${count}× ${name}` : name)
-            .join(', ');
-          console.log(`  Devices:  ${deviceStr}`);
+          console.log(`  Devices:  ${summarizeDeviceNames(device.gpuDevices)}`);
         }
         if (device.vram) {
           console.log(`  VRAM:     ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`);
@@ -586,7 +610,7 @@ async function showStatus(): Promise<void> {
     } catch (error) {
       console.log(`  Status:   ${c.dim}probe failed${c.reset}`);
       if (error instanceof Error && error.message) {
-        console.log(`  ${c.dim}${error.message}${c.reset}`);
+        console.log(`  ${c.dim}${sanitizeDiagnosticMessage(error.message)}${c.reset}`);
       }
     }
   }
@@ -1804,36 +1828,42 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   throw new Error(`--chunk-strategy must be "auto" or "regex" (got "${s}")`);
 }
 
-export function resolveEmbedModelForCli(): string {
+function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   try {
-    return resolveEmbedModel(loadConfig().models);
-  } catch {
-    return resolveEmbedModel();
-  }
-}
-
-export function resolveGenerateModelForCli(): string {
-  try {
-    return resolveGenerateModel(loadConfig().models);
-  } catch {
-    return resolveGenerateModel();
-  }
-}
-
-export function resolveRerankModelForCli(): string {
-  try {
-    return resolveRerankModel(loadConfig().models);
-  } catch {
-    return resolveRerankModel();
-  }
-}
-
-function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
-  try {
-    return resolveModels(loadConfig().models);
+    const config = loadConfig();
+    const models = resolveModels(config.models);
+    const current = config.models ?? {};
+    if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
+      saveConfig({
+        ...config,
+        models: {
+          ...current,
+          embed: models.embed,
+          generate: models.generate,
+          rerank: models.rerank,
+        },
+      });
+    }
+    return models;
   } catch {
     return resolveModels();
   }
+}
+
+export function resolveEmbedModelForCli(): string {
+  return ensureModelsConfiguredForCli().embed;
+}
+
+export function resolveGenerateModelForCli(): string {
+  return ensureModelsConfiguredForCli().generate;
+}
+
+export function resolveRerankModelForCli(): string {
+  return ensureModelsConfiguredForCli().rerank;
+}
+
+function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
+  return ensureModelsConfiguredForCli();
 }
 
 async function vectorIndex(
@@ -3235,12 +3265,343 @@ function doctorCheck(label: string, ok: boolean, details: string): void {
   console.log(`${mark} ${label}: ${details}`);
 }
 
+function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function shortModelName(model: string): string {
+  if (model.startsWith("hf:")) {
+    return model.split("/").pop() || model;
+  }
+  return model.length > 56 ? `${model.slice(0, 53)}...` : model;
+}
+
+function normalizedDoctorNextSteps(steps: string[]): string[] {
+  const unique = Array.from(new Set(steps));
+  const hasForceEmbed = unique.some(step => step.includes("qmd embed --force"));
+  if (!hasForceEmbed) return unique;
+  return unique.filter(step => !step.includes("qmd embed") || step.startsWith("Run `qmd embed --force`"));
+}
+
+function shortHashSeq(hashSeq: string): string {
+  const idx = hashSeq.lastIndexOf("_");
+  if (idx < 0) return hashSeq.length > 18 ? `${hashSeq.slice(0, 18)}...` : hashSeq;
+  return `${hashSeq.slice(0, 12)}_${hashSeq.slice(idx + 1)}`;
+}
+
+type DoctorVectorSampleResult = {
+  ok: boolean;
+  details: string;
+};
+
+function decodeStoredEmbedding(bytes: Uint8Array): Float32Array {
+  return new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+}
+
+function cosineDistance(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  if (a.length !== b.length || a.length === 0) return Number.POSITIVE_INFINITY;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  if (normA === 0 || normB === 0) return Number.POSITIVE_INFINITY;
+  return 1 - (dot / (Math.sqrt(normA) * Math.sqrt(normB)));
+}
+
+function isGgufFile(path: string): boolean {
+  if (!existsSync(path)) return false;
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const header = Buffer.alloc(4);
+    readSync(fd, header, 0, 4, 0);
+    return header.toString("utf-8") === "GGUF";
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function findCachedModelPath(model: string): string | null {
+  if (model.startsWith("hf:")) {
+    const filename = model.split("/").pop();
+    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR)) return null;
+    const entries = readdirSync(DEFAULT_MODEL_CACHE_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.includes(filename)) continue;
+      const candidate = pathJoin(DEFAULT_MODEL_CACHE_DIR, entry.name);
+      if (isGgufFile(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  return existsSync(model) && isGgufFile(model) ? model : null;
+}
+
+type EnvOverride = {
+  name: string;
+  value: string;
+  consequence: string;
+};
+
+function envValueForDisplay(value: string): string {
+  const sanitized = sanitizeDiagnosticMessage(value);
+  return sanitized.length > 96 ? `${sanitized.slice(0, 93)}...` : sanitized;
+}
+
+function collectEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }): EnvOverride[] {
+  const configModels = loadConfig().models ?? {};
+  const overrides: EnvOverride[] = [];
+  const add = (name: string, consequence: string) => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return;
+    overrides.push({ name, value: envValueForDisplay(raw), consequence });
+  };
+  const addModel = (name: string, key: "embed" | "generate" | "rerank", active: string) => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return;
+    const configured = configModels[key];
+    const consequence = configured && configured !== raw
+      ? `set but ignored because index models.${key} is configured as ${configured}`
+      : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd pull\` plus \`qmd embed\``;
+    overrides.push({ name, value: envValueForDisplay(raw), consequence });
+  };
+
+  add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
+  add("QMD_CONFIG_DIR", "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME");
+  add("XDG_CONFIG_HOME", "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set");
+  add("XDG_CACHE_HOME", "moves the default index cache, model cache, and MCP daemon PID files");
+  addModel("QMD_EMBED_MODEL", "embed", activeModels.embed);
+  addModel("QMD_GENERATE_MODEL", "generate", activeModels.generate);
+  addModel("QMD_RERANK_MODEL", "rerank", activeModels.rerank);
+  add("QMD_FORCE_CPU", "forces llama.cpp to bypass GPU backends; embeddings/query will be slower but GPU crashes are avoided");
+  add("QMD_LLAMA_GPU", "selects llama.cpp GPU backend (metal/cuda/vulkan) or disables GPU when set to false/off/0");
+  add("QMD_DOCTOR_DEVICE_PROBE", "controls qmd doctor native device probing; 0/off skips GPU probing");
+  add("QMD_STATUS_DEVICE_PROBE", "controls qmd status native device probing only; qmd doctor probes independently");
+  add("QMD_EMBED_PARALLELISM", "overrides embedding parallel context count; too high can exhaust RAM/VRAM");
+  add("QMD_EXPAND_CONTEXT_SIZE", "overrides query expansion context size; larger values use more memory");
+  add("QMD_RERANK_CONTEXT_SIZE", "overrides reranker context size; larger values use more memory");
+  add("QMD_EMBED_CONTEXT_SIZE", "overrides embed context size; larger values use more memory");
+  add("QMD_EDITOR_URI", "overrides clickable editor link template in terminal output");
+  add("QMD_SKILLS_DIR", "overrides where qmd skills are discovered from");
+  add("QMD_DISABLE_DARWIN_QUERY_JSON_SAFE_EXIT", "disables macOS JSON-query safe exit workaround; may re-expose Metal finalizer crashes");
+  add("NO_COLOR", "disables colored terminal output");
+  add("CI", "disables real LLM operations inside QMD's LlamaCpp wrapper");
+  add("HF_ENDPOINT", "changes Hugging Face download endpoint used when pulling models");
+  add("QMD_WRAPPER_CAPTURE", "test/debug hook for the qmd shell wrapper; should not be set in normal use");
+  add("WSL_DISTRO_NAME", "enables WSL path handling heuristics");
+  add("WSL_INTEROP", "enables WSL path handling heuristics");
+  return overrides;
+}
+
+function checkEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }): void {
+  const overrides = collectEnvironmentOverrides(activeModels);
+  if (overrides.length === 0) {
+    doctorCheck("environment overrides", true, "none");
+    return;
+  }
+
+  doctorCheck("environment overrides", false, `${overrides.length} set`);
+  for (const override of overrides) {
+    console.log(`  - ${override.name}=${override.value}: ${override.consequence}`);
+  }
+}
+
+function checkModelDefaults(activeModels: { embed: string; generate: string; rerank: string }, _nextSteps: string[]): void {
+  const configModels = loadConfig().models ?? {};
+  const checks = [
+    { role: "embedding", key: "embed", active: activeModels.embed, configured: configModels.embed, defaultModel: DEFAULT_EMBED_MODEL, envName: "QMD_EMBED_MODEL", envValue: process.env.QMD_EMBED_MODEL },
+    { role: "generation", key: "generate", active: activeModels.generate, configured: configModels.generate, defaultModel: DEFAULT_QUERY_MODEL, envName: "QMD_GENERATE_MODEL", envValue: process.env.QMD_GENERATE_MODEL },
+    { role: "reranking", key: "rerank", active: activeModels.rerank, configured: configModels.rerank, defaultModel: DEFAULT_RERANK_MODEL, envName: "QMD_RERANK_MODEL", envValue: process.env.QMD_RERANK_MODEL },
+  ] as const;
+
+  const notes: string[] = [];
+  for (const check of checks) {
+    const envValue = check.envValue?.trim();
+    if (envValue && check.active === envValue) {
+      notes.push(`${check.role}: env ${check.envName}=${check.active} (default ${check.defaultModel}; might be ok)`);
+    } else if (check.configured && check.configured !== check.defaultModel) {
+      notes.push(`${check.role}: index ${check.configured} (default ${check.defaultModel}; might be ok)`);
+    } else if (envValue && check.active !== envValue) {
+      notes.push(`${check.role}: ${check.envName} is set to ${envValue} but index config uses ${check.active}`);
+    }
+  }
+
+  if (notes.length === 0) {
+    doctorCheck("model defaults", true, "using QMD codebase defaults");
+    return;
+  }
+
+  doctorCheck("model defaults", false, `non-default model configuration: ${notes.join("; ")}`);
+}
+
+function checkModelCache(activeModels: { embed: string; generate: string; rerank: string }, nextSteps: string[]): void {
+  const models = [
+    ["embedding", activeModels.embed],
+    ["generation", activeModels.generate],
+    ["reranking", activeModels.rerank],
+  ] as const;
+  const unique = new Map<string, string[]>();
+  for (const [role, model] of models) {
+    unique.set(model, [...(unique.get(model) ?? []), role]);
+  }
+
+  const missing: string[] = [];
+  const cached: string[] = [];
+  for (const [model, roles] of unique) {
+    const label = `${roles.join("+")}: ${model}`;
+    const path = findCachedModelPath(model);
+    if (path) {
+      cached.push(label);
+    } else {
+      missing.push(label);
+    }
+  }
+
+  if (missing.length === 0) {
+    doctorCheck("model cache", true, `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded`);
+  } else {
+    doctorCheck("model cache", false, `missing ${missing.length}/${unique.size}: ${missing.join("; ")}. Next: run \`qmd pull\``);
+    nextSteps.push("Run `qmd pull` to download missing embedding/generation/reranking models before `qmd embed` or `qmd query`.");
+  }
+}
+
+async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
+  const activeDocs = (db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`).get() as { count: number }).count;
+  if (activeDocs === 0) {
+    return { ok: true, details: "no active documents indexed" };
+  }
+
+  const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  if (!vecTableExists) {
+    return { ok: false, details: "no vector table to test; please run qmd embed again" };
+  }
+
+  const samples = db.prepare(`
+    SELECT cv.hash, cv.seq, c.doc AS body, MIN(d.path) AS path
+    FROM content_vectors cv
+    JOIN documents d ON d.hash = cv.hash AND d.active = 1
+    JOIN content c ON c.hash = cv.hash
+    WHERE cv.model = ? AND cv.embed_fingerprint = ?
+    GROUP BY cv.hash, cv.seq, c.doc
+    ORDER BY random()
+    LIMIT ?
+  `).all(model, fingerprint, sampleSize) as { hash: string; seq: number; body: string; path: string }[];
+
+  if (samples.length === 0) {
+    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again" };
+  }
+
+  const threshold = 0.0001;
+  const mismatches: string[] = [];
+
+  await withLLMSession(async (session) => {
+    for (const sample of samples) {
+      const hashSeq = `${sample.hash}_${sample.seq}`;
+      const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+      const chunk = chunks[sample.seq];
+      if (!chunk) {
+        mismatches.push(`${shortHashSeq(hashSeq)}: chunk no longer exists`);
+        continue;
+      }
+
+      const title = extractTitle(sample.body, sample.path);
+      const result = await session.embed(formatDocForEmbedding(chunk.text, title, model), { model });
+      if (!result) {
+        mismatches.push(`${shortHashSeq(hashSeq)}: embedding failed`);
+        continue;
+      }
+
+      const stored = db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get(hashSeq) as { embedding: Uint8Array } | undefined;
+      if (!stored) {
+        mismatches.push(`${shortHashSeq(hashSeq)}: stored vector missing`);
+        continue;
+      }
+
+      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored.embedding));
+      if (distance > threshold) {
+        mismatches.push(`${shortHashSeq(hashSeq)}: stored vector distance ${distance.toFixed(6)}`);
+      }
+    }
+  }, { maxDuration: 10 * 60 * 1000, name: "doctorEmbeddingVectorSample" });
+
+  if (mismatches.length > 0) {
+    return {
+      ok: false,
+      details: `${mismatches.length}/${samples.length} sampled chunks differ from stored vectors (${mismatches[0]}). Rebuild with \`qmd embed --force\``,
+    };
+  }
+
+  return {
+    ok: true,
+    details: `${samples.length} sampled ${samples.length === 1 ? "chunk" : "chunks"} reproduce stored vectors`,
+  };
+}
+
+async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
+  const mode = configuredGpuModeLabel();
+  doctorCheck("device mode", true, mode);
+
+  const skipProbe = ["0", "false", "off", "no", "skip"].includes((process.env.QMD_DOCTOR_DEVICE_PROBE ?? "").trim().toLowerCase());
+  if (skipProbe) {
+    doctorCheck("device probe", false, "skipped by QMD_DOCTOR_DEVICE_PROBE=0. Next: unset it and rerun `qmd doctor` to verify GPU/CPU acceleration");
+    nextSteps.push("Unset `QMD_DOCTOR_DEVICE_PROBE` and rerun `qmd doctor` when you want to verify llama.cpp device acceleration.");
+    return;
+  }
+
+  const crashHint = "Probing native llama backend now. If qmd crashes here, rerun with `QMD_FORCE_CPU=1 qmd doctor` (or `QMD_DOCTOR_DEVICE_PROBE=0 qmd doctor` to skip this probe).";
+  if (process.stdout.isTTY) {
+    process.stdout.write(`${c.dim}${crashHint}${c.reset}`);
+  }
+
+  try {
+    const device = await getDefaultLlamaCpp().getDeviceInfo({ allowBuild: false });
+    if (process.stdout.isTTY) {
+      process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
+    }
+    if (device.gpu) {
+      const gpuLabel = device.gpu === "metal" && process.platform === "darwin"
+        ? "metal (macOS Metal backend)"
+        : String(device.gpu);
+      const parts = [`GPU ${gpuLabel}`, `offloading ${device.gpuOffloading ? "enabled" : "disabled"}`];
+      if (device.gpuDevices.length > 0) parts.push(`devices: ${summarizeDeviceNames(device.gpuDevices)}`);
+      if (device.vram) parts.push(`VRAM ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`);
+      parts.push(`${device.cpuCores} CPU math cores`);
+      doctorCheck("device probe", device.gpuOffloading, device.gpuOffloading
+        ? parts.join("; ")
+        : `${parts.join("; ")}. Next: check QMD_LLAMA_GPU and llama.cpp backend support`);
+      if (!device.gpuOffloading) {
+        nextSteps.push("GPU was detected but offloading is disabled; check `QMD_LLAMA_GPU=metal|cuda|vulkan` and rerun `qmd doctor`.");
+      }
+    } else {
+      doctorCheck("device probe", false, `running on CPU (${device.cpuCores} math cores). Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`);
+      nextSteps.push("Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.");
+    }
+  } catch (error) {
+    if (process.stdout.isTTY) {
+      process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
+    }
+    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
+    doctorCheck("device probe", false, `probe failed: ${message}. Next: run with QMD_FORCE_CPU=1 to bypass GPU probing, or set QMD_LLAMA_GPU=metal|cuda|vulkan and retry`);
+    nextSteps.push("GPU probe failed; try `QMD_FORCE_CPU=1 qmd doctor` to confirm CPU fallback, then fix GPU drivers/backend if acceleration is expected.");
+  }
+}
+
 async function showDoctor(): Promise<void> {
   const storeInstance = getStore();
   const db = storeInstance.db;
   const pkg = readPackageJson();
-  const embedModel = resolveEmbedModelForCli();
+  const activeModels = resolveModelsForCli();
+  const embedModel = activeModels.embed;
   const fingerprint = getEmbeddingFingerprint(embedModel);
+  const nextSteps: string[] = [];
 
   console.log(`${c.bold}QMD Doctor${c.reset}\n`);
   console.log(`Index: ${getDbPath()}`);
@@ -3254,7 +3615,7 @@ async function showDoctor(): Promise<void> {
   }
 
   const betterSqliteVersion = pkg.dependencies?.["better-sqlite3"] ?? pkg.devDependencies?.["better-sqlite3"] ?? "not declared";
-  doctorCheck("better_sqlite version", true, String(betterSqliteVersion));
+  doctorCheck("better-sqlite3 package", true, String(betterSqliteVersion));
 
   try {
     const row = db.prepare(`SELECT vec_version() AS version`).get() as { version: string };
@@ -3262,6 +3623,12 @@ async function showDoctor(): Promise<void> {
   } catch (error) {
     doctorCheck("sqlite-vec", false, error instanceof Error ? error.message : String(error));
   }
+
+  checkEnvironmentOverrides(activeModels);
+  checkModelDefaults(activeModels, nextSteps);
+  checkModelCache(activeModels, nextSteps);
+
+  await runDoctorDeviceChecks(nextSteps);
 
   try {
     const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
@@ -3274,7 +3641,10 @@ async function showDoctor(): Promise<void> {
 
   try {
     const pending = getHashesNeedingEmbedding(db, undefined, embedModel);
-    doctorCheck("embedding freshness", pending === 0, pending === 0 ? "all active documents match current fingerprint" : `${pending} active documents need embedding`);
+    doctorCheck("embedding freshness", pending === 0, pending === 0 ? "all active documents match current fingerprint" : `${formatCount(pending)} active documents need embeddings. Next: \`qmd embed\``);
+    if (pending > 0) {
+      nextSteps.push(`Run \`qmd embed\` to generate ${formatCount(pending)} missing/stale document embeddings.`);
+    }
   } catch (error) {
     doctorCheck("embedding freshness", false, error instanceof Error ? error.message : String(error));
   }
@@ -3289,30 +3659,45 @@ async function showDoctor(): Promise<void> {
     const uniqueFingerprints = new Set(rows.map(row => row.fingerprint));
     const offCurrent = rows.filter(row => row.model === embedModel && row.fingerprint !== fingerprint);
     const ok = rows.length === 0 || (uniqueFingerprints.size === 1 && rows[0]?.fingerprint === fingerprint && offCurrent.length === 0);
+    const currentDocs = rows
+      .filter(row => row.model === embedModel && row.fingerprint === fingerprint)
+      .reduce((sum, row) => sum + row.docs, 0);
+    const otherDocs = rows.reduce((sum, row) => sum + row.docs, 0) - currentDocs;
+    const groups = rows.map(row => {
+      const label = row.fingerprint === fingerprint ? "current" : (row.fingerprint || "legacy");
+      return `${shortModelName(row.model)}:${label} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`;
+    }).join("; ");
     const details = rows.length === 0
-      ? `none yet; current ${fingerprint}`
-      : rows.map(row => {
-          const label = row.fingerprint === fingerprint ? "current" : (row.fingerprint || "legacy");
-          return `${row.model}:${label} ${row.docs} docs/${row.chunks} chunks`;
-        }).join("; ");
+      ? `no vectors yet; current fingerprint ${fingerprint}`
+      : ok
+        ? `${formatCount(currentDocs)} docs on current fingerprint (${fingerprint})`
+        : `${formatCount(currentDocs)} docs current, ${formatCount(otherDocs)} docs legacy/stale. ${groups}. Next: \`qmd embed\``;
     doctorCheck("embedding fingerprints", ok, details);
+    if (!ok) {
+      nextSteps.push("Run `qmd embed` to migrate active documents to the current embedding fingerprint; use `qmd embed --force` if vector samples still fail afterward.");
+    }
   } catch (error) {
     doctorCheck("embedding fingerprints", false, error instanceof Error ? error.message : String(error));
   }
 
-  const sample = db.prepare(`
-    SELECT c.hash, c.doc
-    FROM documents d
-    JOIN content c ON c.hash = d.hash
-    WHERE d.active = 1
-    ORDER BY random()
-    LIMIT 1
-  `).get() as { hash: string; doc: string } | undefined;
-  if (sample) {
-    const rehashed = await hashContent(sample.doc);
-    doctorCheck("content hash sample", rehashed === sample.hash, `${sample.hash.slice(0, 12)} ${rehashed === sample.hash ? "matches" : `!= ${rehashed.slice(0, 12)}`}`);
-  } else {
-    doctorCheck("content hash sample", true, "no active documents indexed");
+  try {
+    const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
+    doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
+    if (!vectorSample.ok) {
+      nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
+    doctorCheck("embedding vector sample", false, `${message}; rebuild with \`qmd embed --force\``);
+    nextSteps.push("Run `qmd embed --force` to rebuild existing vectors, then rerun `qmd doctor`.");
+  }
+
+  const steps = normalizedDoctorNextSteps(nextSteps);
+  if (steps.length > 0) {
+    console.log(`\n${c.bold}Recommended next step${steps.length === 1 ? "" : "s"}${c.reset}`);
+    for (const step of steps) {
+      console.log(`  - ${step}`);
+    }
   }
 
   closeDb();
