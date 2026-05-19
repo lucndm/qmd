@@ -5,7 +5,7 @@ import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, readSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -81,7 +81,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile } from "../llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -107,6 +107,8 @@ import {
   getLocalDbPath,
   getConfigPath,
   configExists,
+  type CollectionConfig,
+  type ModelsConfig,
 } from "../collections.js";
 
 // NOTE: enableProductionMode() is intentionally NOT called at module scope here.
@@ -391,6 +393,47 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return pathResolve(a) === pathResolve(b);
+  }
+}
+
+function initLocalIndex(): void {
+  const cwd = getPwd();
+  if (sameDirectory(cwd, homedir())) {
+    throw new Error("Refusing to initialize a local index in $HOME. The global index is automatically created; run `qmd collection add <path>` for the global index, or run `qmd init` inside a project folder.");
+  }
+
+  const qmdDir = pathJoin(cwd, ".qmd");
+  const ymlPath = pathJoin(qmdDir, "index.yml");
+  const yamlPath = pathJoin(qmdDir, "index.yaml");
+  const configPath = existsSync(yamlPath) ? yamlPath : ymlPath;
+  const dbPath = pathJoin(qmdDir, "index.sqlite");
+
+  mkdirSync(qmdDir, { recursive: true });
+  setConfigSource({ configPath });
+  storeDbPathOverride = dbPath;
+  closeDb();
+
+  if (!existsSync(configPath)) {
+    saveConfig({
+      collections: {},
+      models: resolveModels(),
+    });
+  } else {
+    ensureModelsConfiguredForCli();
+  }
+
+  const localStore = createStore(dbPath);
+  syncConfigToDb(localStore.db, loadConfig());
+  localStore.close();
+
+  console.log("ready to go with new local index");
 }
 
 function isForceCpuEnabled(): boolean {
@@ -3183,6 +3226,7 @@ function showHelp(): void {
   console.log("  qmd ls [collection[/path]]                   - Inspect indexed files");
   console.log("");
   console.log("Maintenance:");
+  console.log("  qmd init                      - Create a project-local .qmd index");
   console.log("  qmd status                    - View index + collection health");
   console.log("  qmd update [--pull]           - Re-index collections (optionally git pull first)");
   console.log("  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings");
@@ -3314,35 +3358,35 @@ function cosineDistance(a: ArrayLike<number>, b: ArrayLike<number>): number {
   return 1 - (dot / (Math.sqrt(normA) * Math.sqrt(normB)));
 }
 
-function isGgufFile(path: string): boolean {
-  if (!existsSync(path)) return false;
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, "r");
-    const header = Buffer.alloc(4);
-    readSync(fd, header, 0, 4, 0);
-    return header.toString("utf-8") === "GGUF";
-  } catch {
-    return false;
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
+type CachedModelInspection = {
+  path: string | null;
+  invalid: string[];
+};
+
+function formatModelDiagnosticPath(path: string): string {
+  return sanitizeDiagnosticMessage(path);
 }
 
-function findCachedModelPath(model: string): string | null {
+function findCachedModelInspection(model: string): CachedModelInspection {
+  const invalid: string[] = [];
   if (model.startsWith("hf:")) {
     const filename = model.split("/").pop();
-    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR)) return null;
+    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR)) return { path: null, invalid };
     const entries = readdirSync(DEFAULT_MODEL_CACHE_DIR, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.includes(filename)) continue;
       const candidate = pathJoin(DEFAULT_MODEL_CACHE_DIR, entry.name);
-      if (isGgufFile(candidate)) return candidate;
+      const inspection = inspectGgufFile(candidate);
+      if (inspection.valid) return { path: candidate, invalid };
+      invalid.push(`${formatModelDiagnosticPath(candidate)}: ${inspection.details}`);
     }
-    return null;
+    return { path: null, invalid };
   }
 
-  return existsSync(model) && isGgufFile(model) ? model : null;
+  const inspection = inspectGgufFile(model);
+  if (inspection.valid) return { path: model, invalid };
+  if (inspection.exists) invalid.push(`${formatModelDiagnosticPath(model)}: ${inspection.details}`);
+  return { path: null, invalid };
 }
 
 type EnvOverride = {
@@ -3356,8 +3400,7 @@ function envValueForDisplay(value: string): string {
   return sanitized.length > 96 ? `${sanitized.slice(0, 93)}...` : sanitized;
 }
 
-function collectEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }): EnvOverride[] {
-  const configModels = loadConfig().models ?? {};
+function collectEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): EnvOverride[] {
   const overrides: EnvOverride[] = [];
   const add = (name: string, consequence: string) => {
     const raw = process.env[name]?.trim();
@@ -3401,8 +3444,33 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   return overrides;
 }
 
-function checkEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }): void {
-  const overrides = collectEnvironmentOverrides(activeModels);
+type DoctorConfigCheck = {
+  config: CollectionConfig | null;
+  valid: boolean;
+};
+
+function checkDoctorIndexConfig(nextSteps: string[]): DoctorConfigCheck {
+  try {
+    const config = loadConfig();
+    const collectionCount = Object.keys(config.collections ?? {}).length;
+    if (collectionCount === 0) {
+      doctorCheck("index config", false, "no collections configured. Next: `qmd collection add .`");
+      nextSteps.push("Run `qmd collection add . --name <name>` from the folder you want to index, or edit .qmd/index.yml manually.");
+    } else {
+      doctorCheck("index config", true, `${formatCount(collectionCount)} ${collectionCount === 1 ? "collection" : "collections"} configured`);
+    }
+    return { config, valid: true };
+  } catch (error) {
+    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
+    const configPath = getConfigPath();
+    doctorCheck("index config", false, `invalid index.yml at ${configPath}: ${message}. Next: fix the YAML and rerun \`qmd doctor\``);
+    nextSteps.push(`Fix invalid YAML in ${configPath}, then rerun \`qmd doctor\`.`);
+    return { config: null, valid: false };
+  }
+}
+
+function checkEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): void {
+  const overrides = collectEnvironmentOverrides(activeModels, configModels);
   if (overrides.length === 0) {
     doctorCheck("environment overrides", true, "none");
     return;
@@ -3414,8 +3482,7 @@ function checkEnvironmentOverrides(activeModels: { embed: string; generate: stri
   }
 }
 
-function checkModelDefaults(activeModels: { embed: string; generate: string; rerank: string }, _nextSteps: string[]): void {
-  const configModels = loadConfig().models ?? {};
+function checkModelDefaults(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): void {
   const checks = [
     { role: "embedding", key: "embed", active: activeModels.embed, configured: configModels.embed, defaultModel: DEFAULT_EMBED_MODEL, envName: "QMD_EMBED_MODEL", envValue: process.env.QMD_EMBED_MODEL },
     { role: "generation", key: "generate", active: activeModels.generate, configured: configModels.generate, defaultModel: DEFAULT_QUERY_MODEL, envName: "QMD_GENERATE_MODEL", envValue: process.env.QMD_GENERATE_MODEL },
@@ -3455,20 +3522,33 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
 
   const missing: string[] = [];
   const cached: string[] = [];
+  const invalid: string[] = [];
   for (const [model, roles] of unique) {
     const label = `${roles.join("+")}: ${model}`;
-    const path = findCachedModelPath(model);
-    if (path) {
+    const inspection = findCachedModelInspection(model);
+    invalid.push(...inspection.invalid.map(detail => `${label} (${detail})`));
+    if (inspection.path) {
       cached.push(label);
     } else {
       missing.push(label);
     }
   }
 
-  if (missing.length === 0) {
-    doctorCheck("model cache", true, `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded`);
+  if (missing.length === 0 && invalid.length === 0) {
+    doctorCheck("model cache", true, `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded and valid GGUF`);
+    return;
+  }
+
+  const parts: string[] = [];
+  if (invalid.length > 0) parts.push(`invalid ${invalid.length}: ${invalid.join("; ")}`);
+  if (missing.length > 0) parts.push(`missing ${missing.length}/${unique.size}: ${missing.join("; ")}`);
+  const next = invalid.length > 0
+    ? "Next: run `qmd pull --refresh` (or remove the bad cached file)"
+    : "Next: run `qmd pull`";
+  doctorCheck("model cache", false, `${parts.join("; ")}. ${next}`);
+  if (invalid.length > 0) {
+    nextSteps.push("Run `qmd pull --refresh` to replace invalid cached model files, or delete the listed file and rerun `qmd pull`.");
   } else {
-    doctorCheck("model cache", false, `missing ${missing.length}/${unique.size}: ${missing.join("; ")}. Next: run \`qmd pull\``);
     nextSteps.push("Run `qmd pull` to download missing embedding/generation/reranking models before `qmd embed` or `qmd query`.");
   }
 }
@@ -3624,8 +3704,10 @@ async function showDoctor(): Promise<void> {
     doctorCheck("sqlite-vec", false, error instanceof Error ? error.message : String(error));
   }
 
-  checkEnvironmentOverrides(activeModels);
-  checkModelDefaults(activeModels, nextSteps);
+  const configCheck = checkDoctorIndexConfig(nextSteps);
+  const configModels = configCheck.config?.models ?? {};
+  checkEnvironmentOverrides(activeModels, configModels);
+  checkModelDefaults(activeModels, configModels);
   checkModelCache(activeModels, nextSteps);
 
   await runDoctorDeviceChecks(nextSteps);
@@ -4014,6 +4096,15 @@ if (isMain) {
       }
       break;
     }
+
+    case "init":
+      try {
+        initLocalIndex();
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
+      break;
 
     case "status":
       await showStatus();

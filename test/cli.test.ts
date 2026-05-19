@@ -16,6 +16,7 @@ import { setTimeout as sleep } from "timers/promises";
 import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
 import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
+import { setConfigSource } from "../src/collections.ts";
 
 // Test fixtures directory and database path
 let testDir: string;
@@ -311,13 +312,15 @@ describe("CLI Skills", () => {
 });
 
 describe("CLI Embed", () => {
-  test("prefers QMD_EMBED_MODEL for qmd embed", () => {
+  test("prefers QMD_EMBED_MODEL for qmd embed when the index has no model pin", () => {
     const prev = process.env.QMD_EMBED_MODEL;
     process.env.QMD_EMBED_MODEL = "hf:env/embed-model.gguf";
+    setConfigSource({ config: { collections: {} } });
 
     try {
       expect(resolveEmbedModelForCli()).toBe("hf:env/embed-model.gguf");
     } finally {
+      setConfigSource();
       if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
       else process.env.QMD_EMBED_MODEL = prev;
     }
@@ -326,10 +329,12 @@ describe("CLI Embed", () => {
   test("falls back to the default embed model when QMD_EMBED_MODEL is unset", () => {
     const prev = process.env.QMD_EMBED_MODEL;
     delete process.env.QMD_EMBED_MODEL;
+    setConfigSource({ config: { collections: {} } });
 
     try {
       expect(resolveEmbedModelForCli()).toBe(DEFAULT_EMBED_MODEL_URI);
     } finally {
+      setConfigSource();
       if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
       else process.env.QMD_EMBED_MODEL = prev;
     }
@@ -429,6 +434,36 @@ describe("CLI Skill Commands", () => {
   });
 });
 
+describe("CLI Init Command", () => {
+  test("creates a project-local .qmd index", async () => {
+    const projectDir = join(testDir, "init-project");
+    await mkdir(projectDir, { recursive: true });
+
+    const { stdout, exitCode } = await runQmd(["init"], { cwd: projectDir });
+    expect(exitCode).toBe(0);
+    expect(stdout.trim()).toBe("ready to go with new local index");
+    expect(existsSync(join(projectDir, ".qmd", "index.yml"))).toBe(true);
+    expect(existsSync(join(projectDir, ".qmd", "index.sqlite"))).toBe(true);
+    const configText = readFileSync(join(projectDir, ".qmd", "index.yml"), "utf-8");
+    expect(configText).toContain("collections: {}");
+    expect(configText).toContain("models:");
+  });
+
+  test("refuses to initialize in HOME", async () => {
+    const fakeHome = join(testDir, "init-home");
+    await mkdir(fakeHome, { recursive: true });
+
+    const { stderr, exitCode } = await runQmd(["init"], {
+      cwd: fakeHome,
+      env: { HOME: fakeHome },
+    });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Refusing to initialize a local index in $HOME");
+    expect(stderr).toContain("global index is automatically created");
+    expect(existsSync(join(fakeHome, ".qmd", "index.yml"))).toBe(false);
+  });
+});
+
 describe("CLI Add Command", () => {
   test("adds files from current directory", async () => {
     const { stdout, exitCode } = await runQmd(["collection", "add", "."]);
@@ -491,7 +526,28 @@ describe("CLI Status Command", () => {
     expect(configText).toContain(DEFAULT_EMBED_MODEL_URI);
     expect(configText).toContain(DEFAULT_GENERATE_MODEL_URI);
     expect(configText).toContain(DEFAULT_RERANK_MODEL_URI);
-  });
+  }, 20000);
+
+  test("qmd doctor warns when no collections are configured", async () => {
+    const env = await createIsolatedTestEnv("doctor-no-collections");
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("index config");
+    expect(stdout).toContain("no collections configured");
+    expect(stdout).toContain("qmd collection add .");
+  }, 20000);
+
+  test("qmd doctor reports invalid index.yml without crashing", async () => {
+    const env = await createIsolatedTestEnv("doctor-invalid-config");
+    await writeFile(join(env.configDir, "index.yml"), "collections:\n  bad: [unterminated\n");
+
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("index config");
+    expect(stdout).toContain("invalid index.yml at");
+    expect(stdout).toContain(join(env.configDir, "index.yml"));
+    expect(stdout).toContain("fix the YAML");
+  }, 20000);
 
   test("qmd doctor warns when configured models differ from code defaults", async () => {
     const env = await createIsolatedTestEnv("doctor-custom-models");
@@ -504,7 +560,32 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("index hf:example/custom-embed/custom.gguf");
     expect(stdout).toContain("might be ok");
     expect(stdout).toContain("qmd pull");
-  });
+  }, 20000);
+
+  test("qmd doctor identifies cached non-GGUF model files", async () => {
+    const env = await createIsolatedTestEnv("doctor-invalid-model-cache");
+    const model = "hf:example/custom-model/custom.gguf";
+    await writeFile(join(env.configDir, "index.yml"), `collections: {}\nmodels:\n  embed: ${model}\n  generate: ${model}\n  rerank: ${model}\n`);
+    const cacheRoot = join(env.configDir, "cache");
+    const modelCacheDir = join(cacheRoot, "qmd", "models");
+    await mkdir(modelCacheDir, { recursive: true });
+    const badModelPath = join(modelCacheDir, "custom.gguf");
+    await writeFile(badModelPath, "<!doctype html><html>blocked</html>");
+
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: {
+        XDG_CACHE_HOME: cacheRoot,
+        QMD_DOCTOR_DEVICE_PROBE: "0",
+      },
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("model cache");
+    expect(stdout).toContain("invalid 1");
+    expect(stdout).toContain("HTML page, not a GGUF model");
+    expect(stdout).toContain("qmd pull --refresh");
+  }, 20000);
 
   test("qmd doctor says when models are overridden by env", async () => {
     const env = await createIsolatedTestEnv("doctor-env-models");
@@ -523,7 +604,60 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("environment overrides");
     expect(stdout).toContain(`QMD_EMBED_MODEL=${customEmbed}`);
     expect(stdout).toContain("sets the active embed model");
-  });
+  }, 20000);
+
+  test("qmd doctor shows CPU-forced device mode with QMD_FORCE_CPU=1", async () => {
+    const env = await createIsolatedTestEnv("doctor-force-cpu");
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: {
+        QMD_FORCE_CPU: "1",
+        QMD_DOCTOR_DEVICE_PROBE: "0",
+      },
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("QMD_FORCE_CPU=1");
+    expect(stdout).toContain("forces llama.cpp to bypass GPU backends");
+    expect(stdout).toContain("device mode: CPU forced (QMD_FORCE_CPU)");
+  }, 20000);
+
+  test("qmd doctor lists known environment overrides and consequences", async () => {
+    const env = await createIsolatedTestEnv("doctor-env-overrides");
+    const overrides = {
+      XDG_CACHE_HOME: join(env.configDir, "cache"),
+      QMD_DOCTOR_DEVICE_PROBE: "0",
+      QMD_STATUS_DEVICE_PROBE: "1",
+      QMD_FORCE_CPU: "1",
+      QMD_LLAMA_GPU: "metal",
+      QMD_EMBED_PARALLELISM: "2",
+      QMD_EXPAND_CONTEXT_SIZE: "4096",
+      QMD_RERANK_CONTEXT_SIZE: "8192",
+      QMD_EMBED_CONTEXT_SIZE: "1024",
+      QMD_EDITOR_URI: "vscode://file/{file}:{line}:{col}",
+      QMD_SKILLS_DIR: "/tmp/qmd-skills",
+      QMD_DISABLE_DARWIN_QUERY_JSON_SAFE_EXIT: "1",
+      NO_COLOR: "1",
+      CI: "1",
+      HF_ENDPOINT: "https://hf-mirror.com",
+      WSL_DISTRO_NAME: "Ubuntu",
+      WSL_INTEROP: "1",
+    };
+
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: overrides,
+    });
+    expect(exitCode).toBe(0);
+    for (const name of Object.keys(overrides)) {
+      expect(stdout).toContain(name);
+    }
+    expect(stdout).toContain("forces llama.cpp to bypass GPU backends");
+    expect(stdout).toContain("moves the default index cache");
+    expect(stdout).toContain("disables real LLM operations");
+    expect(stdout).toContain("changes Hugging Face download endpoint");
+  }, 20000);
 
   test("qmd doctor flags mixed embedding fingerprints", async () => {
     const db = openDatabase(testDbPath);
@@ -538,7 +672,7 @@ describe("CLI Status Command", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("embedding fingerprints");
     expect(stdout).toContain("stale1");
-  });
+  }, 20000);
 
   test("shows index status", async () => {
     const { stdout, exitCode } = await runQmd(["status"]);
@@ -1620,7 +1754,7 @@ describe("status and collection list hide filesystem paths", () => {
     const lines = stdout.split('\n').filter(l => !l.includes('Index:'));
     const pathLines = lines.filter(l => l.includes('/Users/') || l.includes('/home/') || l.includes('/tmp/'));
     expect(pathLines.length).toBe(0);
-  });
+  }, 20000);
 
   test("collection list does not show full filesystem paths", async () => {
     const { stdout, exitCode } = await runQmd(["collection", "list"], { dbPath: localDbPath, configDir: localConfigDir });

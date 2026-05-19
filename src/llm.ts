@@ -32,6 +32,7 @@ export function setNodeLlamaCppModuleForTest(module: NodeLlamaCppModule | null):
   nodeLlamaCppImport = module ? Promise.resolve(module) : null;
   failedGpuInitModes.clear();
   noGpuAccelerationWarningShown = false;
+  cpuForcedPrebuiltFallbackWarningShown = false;
 }
 
 type StdoutWrite = typeof process.stdout.write;
@@ -324,37 +325,106 @@ async function getRemoteEtag(ref: HfRef): Promise<string | null> {
 
 const GGUF_MAGIC = Buffer.from("GGUF");
 
+export type GgufFileInspection = {
+  exists: boolean;
+  valid: boolean;
+  kind: "missing" | "gguf" | "html" | "invalid";
+  sizeBytes?: number;
+  magic?: string;
+  details: string;
+};
+
+function formatModelFileSize(sizeBytes: number): string {
+  return `${(sizeBytes / 1024).toFixed(0)} KB`;
+}
+
+function printableMagic(header: Buffer): string {
+  const text = header.toString("utf-8");
+  return /^[\x20-\x7e]{1,4}$/.test(text) ? text : `0x${header.toString("hex")}`;
+}
+
+/**
+ * Inspect a potential GGUF model file without mutating it.
+ * Used by doctor for early diagnostics and by runtime validation before load.
+ */
+export function inspectGgufFile(filePath: string): GgufFileInspection {
+  if (!existsSync(filePath)) {
+    return { exists: false, valid: false, kind: "missing", details: "file does not exist" };
+  }
+
+  let sizeBytes = 0;
+  try {
+    sizeBytes = statSync(filePath).size;
+    const fd = openSync(filePath, "r");
+    const sniff = Buffer.alloc(512);
+    try {
+      readSync(fd, sniff, 0, 512, 0);
+    } finally {
+      closeSync(fd);
+    }
+
+    const header = sniff.subarray(0, 4);
+    if (header.equals(GGUF_MAGIC)) {
+      return {
+        exists: true,
+        valid: true,
+        kind: "gguf",
+        sizeBytes,
+        magic: "GGUF",
+        details: `valid GGUF (${formatModelFileSize(sizeBytes)})`,
+      };
+    }
+
+    const magic = printableMagic(header);
+    const text = sniff.toString("utf-8").toLowerCase();
+    const isHtml = text.includes("<!doctype") || text.includes("<html");
+    if (isHtml) {
+      return {
+        exists: true,
+        valid: false,
+        kind: "html",
+        sizeBytes,
+        magic,
+        details: `HTML page, not a GGUF model (${formatModelFileSize(sizeBytes)}); likely proxy/firewall/captive portal response`,
+      };
+    }
+
+    return {
+      exists: true,
+      valid: false,
+      kind: "invalid",
+      sizeBytes,
+      magic,
+      details: `not valid GGUF (expected magic "GGUF", got "${magic}", ${formatModelFileSize(sizeBytes)})`,
+    };
+  } catch (error) {
+    return {
+      exists: true,
+      valid: false,
+      kind: "invalid",
+      sizeBytes,
+      details: `cannot read model file: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /**
  * Validate that a file is actually a GGUF model, not an HTML error page
  * from a proxy, firewall, or failed download.
  * Throws a descriptive error if the file is not valid GGUF.
  */
 function validateGgufFile(filePath: string, modelUri: string): void {
-  if (!existsSync(filePath)) return; // let downstream handle missing files
-
-  // Read header + sniff bytes in one go, then close immediately
-  const fd = openSync(filePath, "r");
-  const sniff = Buffer.alloc(512);
-  try {
-    readSync(fd, sniff, 0, 512, 0);
-  } finally {
-    closeSync(fd);
-  }
-
-  const header = sniff.subarray(0, 4);
-  if (header.equals(GGUF_MAGIC)) return; // valid GGUF
-
-  const text = sniff.toString("utf-8").toLowerCase();
-  const isHtml = text.includes("<!doctype") || text.includes("<html");
-  const got = header.toString("utf-8");
-  const sizeKB = (statSync(filePath).size / 1024).toFixed(0);
+  const inspection = inspectGgufFile(filePath);
+  if (!inspection.exists || inspection.valid) return; // let downstream handle missing files
 
   // Remove the bad file so the next attempt re-downloads
-  unlinkSync(filePath);
+  try {
+    unlinkSync(filePath);
+  } catch { /* best effort */ }
 
-  if (isHtml) {
+  if (inspection.kind === "html") {
     throw new Error(
-      `Downloaded model file is an HTML page, not a GGUF model (${sizeKB} KB).\n` +
+      `Downloaded model file is an HTML page, not a GGUF model (${formatModelFileSize(inspection.sizeBytes ?? 0)}).\n` +
       `Something is intercepting the download from huggingface.co (a proxy, firewall, or captive portal).\n\n` +
       `Model: ${modelUri}\n` +
       `Path:  ${filePath}\n\n` +
@@ -367,7 +437,7 @@ function validateGgufFile(filePath: string, modelUri: string): void {
   }
 
   throw new Error(
-    `Model file is not valid GGUF (expected magic "GGUF", got "${got}", file is ${sizeKB} KB).\n` +
+    `Model file is not valid GGUF (expected magic "GGUF", got "${inspection.magic ?? "unknown"}", file is ${formatModelFileSize(inspection.sizeBytes ?? 0)}).\n` +
     `Model: ${modelUri}\n` +
     `Path:  ${filePath}\n\n` +
     `The file has been removed. Run the command again to re-download.`
@@ -607,6 +677,11 @@ function resolveExpandContextSize(configValue?: number): number {
 
 const failedGpuInitModes = new Set<LlamaGpuMode>();
 let noGpuAccelerationWarningShown = false;
+let cpuForcedPrebuiltFallbackWarningShown = false;
+
+function isCpuModeRequested(): boolean {
+  return resolveLlamaGpuMode() === false;
+}
 
 export class LlamaCpp implements LLM {
   private readonly _ciMode = !!process.env.CI;
@@ -765,22 +840,44 @@ export class LlamaCpp implements LLM {
       const gpuMode = resolveLlamaGpuMode();
 
       const { getLlama, LlamaLogLevel } = await loadNodeLlamaCpp();
-      const loadLlama = async (gpu: LlamaGpuMode) =>
+      const loadLlama = async (gpu: LlamaGpuMode, sourceBuildAllowed = allowBuild) =>
         await withNativeStdoutRedirectedToStderr(() => getLlama({
-          build: allowBuild ? "autoAttempt" : "never",
+          // Prefer packaged prebuilt bindings before compiling llama.cpp locally.
+          // "autoAttempt" can try to compile a missing requested backend before
+          // falling back to another prebuilt backend; "auto" uses prebuilt/local
+          // binaries first and only builds when none are usable.
+          build: sourceBuildAllowed ? "auto" : "never",
           logLevel: LlamaLogLevel.error,
           gpu,
-          skipDownload: !allowBuild,
+          progressLogs: false,
+          skipDownload: !sourceBuildAllowed,
         }));
+      const loadCpuCompatibleLlama = async () => {
+        try {
+          return await loadLlama(false, false);
+        } catch (err) {
+          // Some platforms, notably Apple Silicon, ship a Metal prebuilt but no
+          // CPU-only prebuilt. Do a fast no-build lookup for an actual CPU
+          // binding first; if it does not exist, use the packaged auto/Metal
+          // binding and disable model offloading via gpuLayers: 0.
+          if (!cpuForcedPrebuiltFallbackWarningShown) {
+            cpuForcedPrebuiltFallbackWarningShown = true;
+            process.stderr.write(
+              `QMD Warning: CPU-only llama.cpp prebuilt not available (${err instanceof Error ? err.message : String(err)}); using packaged backend with GPU offloading disabled.\n`
+            );
+          }
+          return await loadLlama("auto", false);
+        }
+      };
 
       let llama: Llama;
-      if (gpuMode === false || failedGpuInitModes.has(gpuMode)) {
-        if (gpuMode !== false && failedGpuInitModes.has(gpuMode)) {
-          process.stderr.write(
-            `QMD Warning: skipping previously failed GPU init${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`}, using CPU.\n`
-          );
-        }
-        llama = await loadLlama(false);
+      if (gpuMode === false) {
+        llama = await loadCpuCompatibleLlama();
+      } else if (failedGpuInitModes.has(gpuMode)) {
+        process.stderr.write(
+          `QMD Warning: skipping previously failed GPU init${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`}, using CPU.\n`
+        );
+        llama = await loadCpuCompatibleLlama();
       } else {
         try {
           llama = await loadLlama(gpuMode);
@@ -792,7 +889,7 @@ export class LlamaCpp implements LLM {
           process.stderr.write(
             `QMD Warning: GPU init failed${gpuMode === "auto" ? "" : ` for QMD_LLAMA_GPU=${gpuMode}`} (${err instanceof Error ? err.message : String(err)}), falling back to CPU.\n`
           );
-          llama = await loadLlama(false);
+          llama = await loadCpuCompatibleLlama();
         }
       }
 
@@ -805,6 +902,17 @@ export class LlamaCpp implements LLM {
       this.llama = llama;
     }
     return this.llama;
+  }
+
+  private isCpuOffloadForced(): boolean {
+    return isCpuModeRequested();
+  }
+
+  private modelLoadOptions(modelPath: string): { modelPath: string; gpuLayers?: number } {
+    return {
+      modelPath,
+      ...(this.isCpuOffloadForced() ? { gpuLayers: 0 } : {}),
+    };
   }
 
   /**
@@ -835,7 +943,7 @@ export class LlamaCpp implements LLM {
     this.embedModelLoadPromise = (async () => {
       const llama = await this.ensureLlama();
       const modelPath = await this.resolveModel(this.embedModelUri);
-      const model = await llama.loadModel({ modelPath });
+      const model = await llama.loadModel(this.modelLoadOptions(modelPath));
       this.embedModel = model;
       // Model loading counts as activity - ping to keep alive
       this.touchActivity();
@@ -861,7 +969,7 @@ export class LlamaCpp implements LLM {
   private async computeParallelism(perContextMB: number): Promise<number> {
     const llama = await this.ensureLlama();
 
-    if (llama.gpu) {
+    if (!this.isCpuOffloadForced() && llama.gpu) {
       try {
         const vram = await llama.getVramState();
         const freeMB = vram.free / (1024 * 1024);
@@ -886,7 +994,7 @@ export class LlamaCpp implements LLM {
    */
   private async threadsPerContext(parallelism: number): Promise<number> {
     const llama = await this.ensureLlama();
-    if (llama.gpu) return 0; // GPU: let the library decide
+    if (!this.isCpuOffloadForced() && llama.gpu) return 0; // GPU: let the library decide
     const cores = llama.cpuMathCores || 4;
     return Math.max(1, Math.floor(cores / parallelism));
   }
@@ -954,7 +1062,7 @@ export class LlamaCpp implements LLM {
       this.generateModelLoadPromise = (async () => {
         const llama = await this.ensureLlama();
         const modelPath = await this.resolveModel(this.generateModelUri);
-        const model = await llama.loadModel({ modelPath });
+        const model = await llama.loadModel(this.modelLoadOptions(modelPath));
         this.generateModel = model;
         return model;
       })();
@@ -986,7 +1094,7 @@ export class LlamaCpp implements LLM {
     this.rerankModelLoadPromise = (async () => {
       const llama = await this.ensureLlama();
       const modelPath = await this.resolveModel(this.rerankModelUri);
-      const model = await llama.loadModel({ modelPath });
+      const model = await llama.loadModel(this.modelLoadOptions(modelPath));
       this.rerankModel = model;
       // Model loading counts as activity - ping to keep alive
       this.touchActivity();
@@ -1489,17 +1597,18 @@ export class LlamaCpp implements LLM {
     cpuCores: number;
   }> {
     const llama = await this.ensureLlama(options.allowBuild ?? true);
-    const gpuDevices = await llama.getGpuDeviceNames();
+    const cpuForced = this.isCpuOffloadForced();
+    const gpuDevices = cpuForced ? [] : await llama.getGpuDeviceNames();
     let vram: { total: number; used: number; free: number } | undefined;
-    if (llama.gpu) {
+    if (!cpuForced && llama.gpu) {
       try {
         const state = await llama.getVramState();
         vram = { total: state.total, used: state.used, free: state.free };
       } catch { /* no vram info */ }
     }
     return {
-      gpu: llama.gpu,
-      gpuOffloading: llama.supportsGpuOffloading,
+      gpu: cpuForced ? false : llama.gpu,
+      gpuOffloading: !cpuForced && llama.supportsGpuOffloading,
       gpuDevices,
       vram,
       cpuCores: llama.cpuMathCores,
