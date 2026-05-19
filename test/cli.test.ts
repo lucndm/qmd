@@ -55,6 +55,7 @@ async function runQmd(
       INDEX_PATH: dbPath,
       QMD_CONFIG_DIR: configDir, // Use test config directory
       PWD: workingDir, // Must explicitly set PWD since getPwd() checks this
+      QMD_DOCTOR_DEVICE_PROBE: "0", // Keep integration tests deterministic on CI hosts without usable GPU backends.
       ...options.env,
     },
     stdio: ["ignore", "pipe", "pipe"],
