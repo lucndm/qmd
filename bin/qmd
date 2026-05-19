@@ -25,6 +25,31 @@ if [ "$1" = "mcp" ]; then
   export GGML_BACKEND_SILENT="${GGML_BACKEND_SILENT:-1}"
 fi
 
+JS="$DIR/dist/cli/qmd.js"
+
+# In published packages dist/ is always present. In a fresh checkout, however,
+# people often run ./bin/qmd before building. Prefer a source-mode fallback when
+# dependencies are installed; otherwise fail with an actionable message instead
+# of a low-level "Module not found" from Node/Bun.
+if [ ! -f "$JS" ]; then
+  TS="$DIR/src/cli/qmd.ts"
+  if [ -f "$TS" ]; then
+    if [ -f "$DIR/bun.lock" ] || [ -f "$DIR/bun.lockb" ]; then
+      if command -v bun >/dev/null 2>&1; then
+        exec bun "$TS" "$@"
+      fi
+    fi
+    if [ -f "$DIR/node_modules/tsx/dist/cli.mjs" ]; then
+      exec node "$DIR/node_modules/tsx/dist/cli.mjs" "$TS" "$@"
+    fi
+  fi
+
+  echo "qmd is not built: missing $JS" >&2
+  echo "Run: bun install && bun run build" >&2
+  echo "Or:  npm install && npm run build" >&2
+  exit 1
+fi
+
 # Detect the package manager that installed dependencies by checking lockfiles.
 # $BUN_INSTALL is intentionally NOT checked — it only indicates that bun exists
 # on the system, not that it was used to install this package (see #361).
@@ -34,9 +59,9 @@ fi
 # builds that use npm would be incorrectly routed to bun, causing ABI
 # mismatches with better-sqlite3 / sqlite-vec (see #381).
 if [ -f "$DIR/package-lock.json" ]; then
-  exec node "$DIR/dist/cli/qmd.js" "$@"
+  exec node "$JS" "$@"
 elif [ -f "$DIR/bun.lock" ] || [ -f "$DIR/bun.lockb" ]; then
-  exec bun "$DIR/dist/cli/qmd.js" "$@"
+  exec bun "$JS" "$@"
 else
-  exec node "$DIR/dist/cli/qmd.js" "$@"
+  exec node "$JS" "$@"
 fi

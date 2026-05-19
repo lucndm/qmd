@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -27,13 +27,24 @@ function makeTempFixture() {
   return { root, capturePath, runtimeBin };
 }
 
-function makePackage(root: string, packagePath: string, lockfiles: string[] = []) {
+function makePackage(root: string, packagePath: string, lockfiles: string[] = [], options: { dist?: boolean; source?: boolean; tsx?: boolean } = {}) {
   const packageRoot = join(root, packagePath);
+  const includeDist = options.dist ?? true;
   mkdirSync(join(packageRoot, "bin"), { recursive: true });
-  mkdirSync(join(packageRoot, "dist", "cli"), { recursive: true });
   copyFileSync(join(repoRoot, "bin", "qmd"), join(packageRoot, "bin", "qmd"));
   chmodSync(join(packageRoot, "bin", "qmd"), 0o755);
-  writeFileSync(join(packageRoot, "dist", "cli", "qmd.js"), "// fixture\n");
+  if (includeDist) {
+    mkdirSync(join(packageRoot, "dist", "cli"), { recursive: true });
+    writeFileSync(join(packageRoot, "dist", "cli", "qmd.js"), "// fixture\n");
+  }
+  if (options.source) {
+    mkdirSync(join(packageRoot, "src", "cli"), { recursive: true });
+    writeFileSync(join(packageRoot, "src", "cli", "qmd.ts"), "// source fixture\n");
+  }
+  if (options.tsx) {
+    mkdirSync(join(packageRoot, "node_modules", "tsx", "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs"), "// tsx fixture\n");
+  }
   for (const lockfile of lockfiles) {
     writeFileSync(join(packageRoot, lockfile), "");
   }
@@ -160,5 +171,46 @@ describe("bin/qmd package wrapper", () => {
 
     expect(result.runtime).toBe("node");
     expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
+  });
+
+  test("falls back to source with bun in an unbuilt Bun checkout", () => {
+    const { root, runtimeBin, capturePath } = makeTempFixture();
+    const packageRoot = makePackage(root, "qmd", ["bun.lock"], { dist: false, source: true });
+
+    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
+
+    expect(result.runtime).toBe("bun");
+    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "src", "cli", "qmd.ts")));
+    expect(result.args).toEqual(["--version"]);
+  });
+
+  test("falls back to source through tsx in an unbuilt Node checkout", () => {
+    const { root, runtimeBin, capturePath } = makeTempFixture();
+    const packageRoot = makePackage(root, "qmd", [], { dist: false, source: true, tsx: true });
+
+    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
+
+    expect(result.runtime).toBe("node");
+    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs")));
+    expect(result.args).toEqual([realpathSync(join(packageRoot, "src", "cli", "qmd.ts")), "--version"]);
+  });
+
+  test("explains how to build when dist is missing and source cannot run", () => {
+    const { root, runtimeBin } = makeTempFixture();
+    const packageRoot = makePackage(root, "qmd", [], { dist: false });
+
+    const result = spawnSync(join(packageRoot, "bin", "qmd"), ["--version"], {
+      env: {
+        ...process.env,
+        PATH: `${runtimeBin}:${process.env.PATH ?? ""}`,
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("qmd is not built");
+    expect(result.stderr).toContain("bun install && bun run build");
+    expect(result.stderr).toContain("npm install && npm run build");
   });
 });
