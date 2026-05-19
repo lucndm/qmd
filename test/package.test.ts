@@ -50,8 +50,17 @@ describe("package grammar distribution", () => {
     expect(pkg.files, "published package files").toContain("skills/");
     const qmdSkill = readFileSync(new URL("skills/qmd/SKILL.md", root), "utf8");
     expect(qmdSkill).toContain("# QMD - Query Markdown Documents");
+    expect(qmdSkill).toContain("## How search works");
     expect(qmdSkill).toContain("## MCP Tool: `query`");
     expect(qmdSkill).not.toContain("This file is a discovery stub");
+
+    const firstSixtyLines = qmdSkill.split(/\r?\n/).slice(0, 60).join("\n");
+    expect(firstSixtyLines).toContain("Search for candidate documents");
+    expect(firstSixtyLines).toContain("qmd search");
+    expect(firstSixtyLines).toContain('qmd multi-get "#abc123,#def432"');
+    expect(firstSixtyLines).toContain("Retrieved:");
+    expect(firstSixtyLines).toContain("qmd query");
+    expect(firstSixtyLines).toContain("structured queries");
 
     const scriptPath = join(root.pathname, "scripts", "check-package-grammars.mjs");
     const script = readFileSync(scriptPath, "utf8");

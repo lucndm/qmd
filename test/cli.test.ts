@@ -293,7 +293,7 @@ describe("CLI Skills", () => {
     expect(stdout).not.toContain("This file is a discovery stub");
   });
 
-  test("legacy skill install writes the canonical skill", async () => {
+  test("legacy skill install writes a qmd skill show bootstrap", async () => {
     const installDir = join(testDir, "skill-install-target");
     await mkdir(installDir, { recursive: true });
 
@@ -305,8 +305,9 @@ describe("CLI Skills", () => {
     const installedSkillDir = join(installDir, ".agents", "skills", "qmd");
     const installed = readFileSync(join(installedSkillDir, "SKILL.md"), "utf8");
     expect(installed).toContain("# QMD - Query Markdown Documents");
-    expect(installed).toContain("## MCP Tool: `query`");
-    expect(installed).not.toContain("This file is a discovery stub");
+    expect(installed).toContain("!`qmd skill show`");
+    expect(installed).toContain("qmd get");
+    expect(installed).not.toContain("## MCP Tool: `query`");
     expect(readFileSync(join(installedSkillDir, "references", "mcp-setup.md"), "utf8")).toContain("# QMD MCP Server Setup");
   });
 });
@@ -378,7 +379,9 @@ describe("CLI Skill Commands", () => {
     expect(exitCode).toBe(0);
 
     const skillDir = join(projectDir, ".agents", "skills", "qmd");
-    expect(readFileSync(join(skillDir, "SKILL.md"), "utf-8")).toContain("# QMD - Query Markdown Documents");
+    const installed = readFileSync(join(skillDir, "SKILL.md"), "utf-8");
+    expect(installed).toContain("# QMD - Query Markdown Documents");
+    expect(installed).toContain("!`qmd skill show`");
     expect(existsSync(join(projectDir, ".claude", "skills", "qmd"))).toBe(false);
     expect(stdout).toContain(`✓ Installed QMD skill to ${skillDir}`);
     expect(stdout).toContain("Tip: create a Claude symlink manually");
@@ -396,9 +399,9 @@ describe("CLI Skill Commands", () => {
     const skillDir = join(fakeHome, ".agents", "skills", "qmd");
     const claudeLink = join(fakeHome, ".claude", "skills", "qmd");
 
-    expect(readFileSync(join(skillDir, "SKILL.md"), "utf-8")).toContain("# QMD - Query Markdown Documents");
+    expect(readFileSync(join(skillDir, "SKILL.md"), "utf-8")).toContain("!`qmd skill show`");
     expect(lstatSync(claudeLink).isSymbolicLink()).toBe(true);
-    expect(readFileSync(join(claudeLink, "SKILL.md"), "utf-8")).toContain("# QMD - Query Markdown Documents");
+    expect(readFileSync(join(claudeLink, "SKILL.md"), "utf-8")).toContain("!`qmd skill show`");
     expect(stdout).toContain(`✓ Installed QMD skill to ${skillDir}`);
     expect(stdout).toContain(`✓ Linked Claude skill at ${claudeLink}`);
   });
@@ -416,7 +419,7 @@ describe("CLI Skill Commands", () => {
 
     const skillDir = join(fakeHome, ".agents", "skills", "qmd");
     expect(lstatSync(skillDir).isSymbolicLink()).toBe(false);
-    expect(readFileSync(join(skillDir, "SKILL.md"), "utf-8")).toContain("# QMD - Query Markdown Documents");
+    expect(readFileSync(join(skillDir, "SKILL.md"), "utf-8")).toContain("!`qmd skill show`");
     expect(stdout).toContain(`✓ Claude already sees the skill via ${join(fakeHome, ".claude", "skills")}`);
   });
 
