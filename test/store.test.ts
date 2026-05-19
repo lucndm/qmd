@@ -3242,9 +3242,13 @@ describe("Embedding batching", () => {
   test("generateEmbeddings does not mark a partially embedded multi-chunk document complete", async () => {
     const store = await createTestStore();
     const db = store.db;
+    let embedCalls = 0;
     const fakeLlm = {
       async embed(_text: string, _options?: { model?: string }) {
-        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+        embedCalls++;
+        return embedCalls === 1
+          ? { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }
+          : null;
       },
       async embedBatch(texts: string[], _options?: { model?: string }) {
         return texts.map((_text, index) => index === 0
@@ -3266,10 +3270,47 @@ describe("Embedding batching", () => {
       const result = await generateEmbeddings(store);
 
       expect(result.errors).toBeGreaterThan(0);
+      expect(result.failures?.[0]?.attempts).toBe(3);
       expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 0 });
       expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 0 });
       expect(store.getHashesNeedingEmbedding()).toBe(1);
       expect(store.getStatus().needsEmbedding).toBe(1);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings clears chunk errors after successful retry", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = {
+      async embed(_text: string, _options?: { model?: string }) {
+        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+      },
+      async embedBatch(texts: string[], _options?: { model?: string }) {
+        return texts.map((_text, index) => index === 0
+          ? { embedding: [1, 2, 3], model: "fake-embed" }
+          : null
+        );
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      await insertTestDocument(db, "docs", {
+        name: "retry-doc",
+        body: "# Retry doc\n\n" + "transient embedding failure ".repeat(260),
+      });
+
+      const result = await generateEmbeddings(store);
+
+      expect(result.errors).toBe(0);
+      expect(result.failures).toEqual([]);
+      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: result.chunksEmbedded });
+      expect(store.getHashesNeedingEmbedding()).toBe(0);
     } finally {
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);

@@ -10,6 +10,13 @@
 
 ### Fixes
 
+- Launcher: prefer runnable TypeScript source in git checkouts even when ignored `dist/` artifacts exist, while packaged installs continue to run `dist/`.
+- GPU: keep node-llama-cpp's documented `gpu: "auto"` initialization as the primary path, then perform no-build packaged CUDA/Vulkan/Metal probes only if auto falls back to CPU.
+- CLI: move GPU/CPU runtime diagnostics out of `qmd status`; use `qmd doctor` for device probing and related environment guidance.
+- CLI: point unexpected command/setup failures toward `qmd doctor` so diagnostics are the default next step when QMD behaves incorrectly.
+- Doctor: explicitly warn when `content_vectors` contains multiple non-empty embedding fingerprint names, with the per-fingerprint document/chunk breakdown.
+- Embed: make the TTY progress line label byte-based input progress explicitly, show embedded chunks as a count, and shorten the displayed model name.
+- Embed: retain per-chunk failure details, retry failed chunks after later successful embeds and again when no other chunks remain, clear recovered errors, and cap retries to avoid endless loops.
 - Embedding: fingerprint vector metadata using the active embedding model and formatting/chunking parameters so stale vectors are treated as pending after search semantics change. Legacy `content_vectors` columns are migrated lazily on first vector-health/write use to preserve fast QMD startup.
 
 - Skill: expand the packaged QMD skill with retrieval-first workflows, structured query examples, wiki/source collection guidance, and safe fallbacks when model-backed search is unavailable.

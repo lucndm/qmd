@@ -626,9 +626,21 @@ export async function startMcpHttpServer(
     return new Date().toISOString().slice(11, 23); // HH:mm:ss.SSS
   }
 
+  type JsonRpcLikeBody = {
+    method?: unknown;
+    params?: {
+      name?: unknown;
+      arguments?: Record<string, unknown>;
+    };
+  };
+  type RestSearchInput = {
+    type?: unknown;
+    query?: unknown;
+  };
+
   /** Extract a human-readable label from a JSON-RPC body */
-  function describeRequest(body: any): string {
-    const method = body?.method ?? "unknown";
+  function describeRequest(body: JsonRpcLikeBody): string {
+    const method = typeof body.method === "string" ? body.method : "unknown";
     if (method === "tools/call") {
       const tool = body.params?.name ?? "?";
       const args = body.params?.arguments;
@@ -672,7 +684,7 @@ export async function startMcpHttpServer(
       // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
       if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
         const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody);
+        const params = JSON.parse(rawBody) as Record<string, unknown>;
 
         // Validate required fields
         if (!params.searches || !Array.isArray(params.searches)) {
@@ -682,31 +694,32 @@ export async function startMcpHttpServer(
         }
 
         // Map to internal format
-        const queries: ExpandedQuery[] = params.searches.map((s: any) => ({
+        const searches = params.searches as RestSearchInput[];
+        const queries: ExpandedQuery[] = searches.map((s) => ({
           type: s.type as 'lex' | 'vec' | 'hyde',
           query: String(s.query || ""),
         }));
 
         // Use default collections if none specified
-        const effectiveCollections = params.collections ?? defaultCollectionNames;
+        const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
 
         const results = await store.search({
           queries,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
-          limit: params.limit ?? 10,
-          minScore: params.minScore ?? 0,
-          candidateLimit: params.candidateLimit,
-          intent: params.intent,
-          rerank: params.rerank,
+          limit: typeof params.limit === "number" ? params.limit : 10,
+          minScore: typeof params.minScore === "number" ? params.minScore : 0,
+          candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
+          intent: typeof params.intent === "string" ? params.intent : undefined,
+          rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
         });
 
         // Use first lex or vec query for snippet extraction
-        const primaryQuery = params.searches.find((s: any) => s.type === 'lex')?.query
-          || params.searches.find((s: any) => s.type === 'vec')?.query
-          || params.searches[0]?.query || "";
+        const primaryQuery = searches.find((s) => s.type === 'lex')?.query
+          || searches.find((s) => s.type === 'vec')?.query
+          || searches[0]?.query || "";
 
         const formatted = results.map(r => {
-          const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length, params.intent);
+          const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.intent === "string" ? params.intent : undefined);
           return {
             docid: `#${r.docid}`,
             file: r.displayPath,

@@ -11,8 +11,12 @@ import type {
   Token as LlamaToken,
 } from "node-llama-cpp";
 
+type StdoutChunk = string | Uint8Array;
+type WriteCallback = (err?: Error | null) => void;
+
 type NodeLlamaCppModule = {
   getLlama: (options: Record<string, unknown>) => Promise<Llama>;
+  getLlamaGpuTypes?: (include?: "supported" | "allValid") => Promise<LlamaGpuMode[]>;
   resolveModelFile: (model: string, cacheDir: string) => Promise<string>;
   LlamaChatSession: new (options: { contextSequence: unknown }) => {
     prompt: (prompt: string, options?: Record<string, unknown>) => Promise<string>;
@@ -47,8 +51,11 @@ let originalStdoutWrite: StdoutWrite | null = null;
 export async function withNativeStdoutRedirectedToStderr<T>(fn: () => Promise<T>): Promise<T> {
   if (nativeStdoutRedirectDepth === 0) {
     originalStdoutWrite = process.stdout.write.bind(process.stdout) as StdoutWrite;
-    process.stdout.write = ((chunk: any, encoding?: any, cb?: any) => {
-      return process.stderr.write(chunk, encoding, cb as any);
+    process.stdout.write = ((chunk: StdoutChunk, encodingOrCallback?: BufferEncoding | WriteCallback, callback?: WriteCallback) => {
+      if (typeof encodingOrCallback === "function") {
+        return process.stderr.write(chunk, encodingOrCallback);
+      }
+      return process.stderr.write(chunk, encodingOrCallback, callback);
     }) as StdoutWrite;
   }
   nativeStdoutRedirectDepth++;
@@ -839,14 +846,15 @@ export class LlamaCpp implements LLM {
     if (!this.llama) {
       const gpuMode = resolveLlamaGpuMode();
 
-      const { getLlama, LlamaLogLevel } = await loadNodeLlamaCpp();
-      const loadLlama = async (gpu: LlamaGpuMode, sourceBuildAllowed = allowBuild) =>
+      const { getLlama, getLlamaGpuTypes, LlamaLogLevel } = await loadNodeLlamaCpp();
+      const loadLlama = async (gpu: LlamaGpuMode, sourceBuildAllowed = allowBuild, buildOverride?: "auto" | "never") =>
         await withNativeStdoutRedirectedToStderr(() => getLlama({
           // Prefer packaged prebuilt bindings before compiling llama.cpp locally.
-          // "autoAttempt" can try to compile a missing requested backend before
-          // falling back to another prebuilt backend; "auto" uses prebuilt/local
-          // binaries first and only builds when none are usable.
-          build: sourceBuildAllowed ? "auto" : "never",
+          // node-llama-cpp documents gpu:"auto" as the best default: Metal on
+          // Apple Silicon, CUDA when fully available, Vulkan where available,
+          // then CPU. Use build:"auto" for normal loads and build:"never" for
+          // diagnostic/probe paths that must not compile llama.cpp.
+          build: buildOverride ?? (sourceBuildAllowed ? "auto" : "never"),
           logLevel: LlamaLogLevel.error,
           gpu,
           progressLogs: false,
@@ -881,6 +889,30 @@ export class LlamaCpp implements LLM {
       } else {
         try {
           llama = await loadLlama(gpuMode);
+
+          // If node-llama-cpp auto-detection chose CPU, do one no-build pass
+          // over all OS-valid packaged GPU backends. This preserves the
+          // documented auto mode for Metal/CUDA/Vulkan while recovering on
+          // systems where a packaged backend can load but detection is too
+          // conservative. Never compile during these extra probes.
+          if (gpuMode === "auto" && llama.gpu === false && getLlamaGpuTypes) {
+            const candidates = (await getLlamaGpuTypes("allValid"))
+              .filter((candidate): candidate is Exclude<LlamaGpuMode, "auto" | false> => candidate !== false && candidate !== "auto");
+            for (const candidate of candidates) {
+              if (failedGpuInitModes.has(candidate)) continue;
+              try {
+                const gpuLlama = await loadLlama(candidate, false, "never");
+                if (gpuLlama.gpu !== false) {
+                  await disposeWithTimeout("CPU llama runtime", () => llama.dispose());
+                  llama = gpuLlama;
+                  break;
+                }
+                await disposeWithTimeout(`${candidate} probe runtime`, () => gpuLlama.dispose());
+              } catch {
+                failedGpuInitModes.add(candidate);
+              }
+            }
+          }
         } catch (err) {
           // GPU backend (e.g. Vulkan/CUDA on headless/driverless machines) can throw at init.
           // Fall back to CPU so qmd still works, and cache the failure to avoid repeated
@@ -896,7 +928,7 @@ export class LlamaCpp implements LLM {
       if (llama.gpu === false && !noGpuAccelerationWarningShown) {
         noGpuAccelerationWarningShown = true;
         process.stderr.write(
-          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'QMD_STATUS_DEVICE_PROBE=1 qmd status' for device details.\n"
+          "QMD Warning: no GPU acceleration, running on CPU (slow). Run 'qmd doctor' for device diagnostics.\n"
         );
       }
       this.llama = llama;
@@ -1143,9 +1175,8 @@ export class LlamaCpp implements LLM {
         try {
           this.rerankContexts.push(await model.createRankingContext({
             contextSize: LlamaCpp.RERANK_CONTEXT_SIZE,
-            flashAttention: true,
             ...(threads > 0 ? { threads } : {}),
-          } as any));
+          }));
         } catch {
           if (this.rerankContexts.length === 0) {
             // Flash attention might not be supported — retry without it
@@ -1359,7 +1390,7 @@ export class LlamaCpp implements LLM {
         temperature,
         topK: 20,
         topP: 0.8,
-        onTextChunk: (text) => {
+        onTextChunk: (text: string) => {
           result += text;
         },
       });

@@ -263,7 +263,8 @@ describe("native llama stdout containment", () => {
 
       const stderr = String(stderrSpy.mock.calls.map(call => call[0]).join(""));
       expect(stderr.match(/no GPU acceleration/g)?.length).toBe(1);
-      expect(stderr).toContain("QMD_STATUS_DEVICE_PROBE=1 qmd status");
+      expect(stderr).toContain("qmd doctor");
+      expect(stderr).not.toContain("QMD_STATUS_DEVICE_PROBE");
     } finally {
       stderrSpy.mockRestore();
       setNodeLlamaCppModuleForTest(null);

@@ -26,27 +26,28 @@ if [ "$1" = "mcp" ]; then
 fi
 
 JS="$DIR/dist/cli/qmd.js"
+TS="$DIR/src/cli/qmd.ts"
 
-# In published packages dist/ is always present. In a fresh checkout, however,
-# people often run ./bin/qmd before building. Prefer a source-mode fallback when
-# dependencies are installed; otherwise fail with an actionable message instead
-# of a low-level "Module not found" from Node/Bun.
-if [ ! -f "$JS" ]; then
-  TS="$DIR/src/cli/qmd.ts"
-  if [ -f "$TS" ]; then
-    if [ -f "$DIR/bun.lock" ] || [ -f "$DIR/bun.lockb" ]; then
-      if command -v bun >/dev/null 2>&1; then
-        exec bun "$TS" "$@"
-      fi
-    fi
-    if [ -f "$DIR/node_modules/tsx/dist/cli.mjs" ]; then
-      exec node "$DIR/node_modules/tsx/dist/cli.mjs" "$TS" "$@"
+# In published packages, bin/qmd must run dist/. In a git checkout, however,
+# dist/ is often ignored and can be stale after git reset or branch switches.
+# Prefer source mode only for checkouts so ./bin/qmd reflects the checked-out
+# source without changing packaged/runtime behavior.
+if [ -e "$DIR/.git" ] && [ -f "$TS" ]; then
+  if [ -f "$DIR/bun.lock" ] || [ -f "$DIR/bun.lockb" ]; then
+    if command -v bun >/dev/null 2>&1; then
+      exec bun "$TS" "$@"
     fi
   fi
+  if [ -f "$DIR/node_modules/tsx/dist/cli.mjs" ]; then
+    exec node "$DIR/node_modules/tsx/dist/cli.mjs" "$TS" "$@"
+  fi
+fi
 
+if [ ! -f "$JS" ]; then
   echo "qmd is not built: missing $JS" >&2
   echo "Run: bun install && bun run build" >&2
   echo "Or:  npm install && npm run build" >&2
+  echo "After building, run: qmd doctor" >&2
   exit 1
 fi
 

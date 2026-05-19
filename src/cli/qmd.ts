@@ -1,5 +1,5 @@
 import { isBun, openDatabase } from "../db.js";
-import type { Database } from "../db.js";
+import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
@@ -623,40 +623,6 @@ async function showStatus(): Promise<void> {
     console.log(`  Generation:  ${hfLink(activeModels.generate)}`);
   }
 
-  // Device / GPU info
-  // Important: probing node-llama-cpp can abort the whole process on machines with
-  // incompatible GPU drivers (for example Vulkan loader present but no usable driver).
-  // Keep the native probe opt-in, but always show how QMD is configured and how to probe.
-  console.log(`\n${c.bold}Device${c.reset}`);
-  const configuredGpuMode = configuredGpuModeLabel();
-  console.log(`  Mode:     ${configuredGpuMode}`);
-  if (process.env.QMD_STATUS_DEVICE_PROBE !== "1") {
-    console.log(`  Status:   ${c.dim}not probed${c.reset} (set QMD_STATUS_DEVICE_PROBE=1 to test GPU/CPU backend)`);
-  } else {
-    console.log(`  Status:   probing native llama backend...`);
-    try {
-      const llm = getDefaultLlamaCpp();
-      const device = await llm.getDeviceInfo({ allowBuild: false });
-      if (device.gpu) {
-        console.log(`  GPU:      ${c.green}${device.gpu}${c.reset} (offloading: ${device.gpuOffloading ? 'yes' : 'no'})`);
-        if (device.gpuDevices.length > 0) {
-          console.log(`  Devices:  ${summarizeDeviceNames(device.gpuDevices)}`);
-        }
-        if (device.vram) {
-          console.log(`  VRAM:     ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`);
-        }
-      } else {
-        console.log(`  GPU:      ${c.yellow}none${c.reset} (running on CPU — models will be slow)`);
-        console.log(`  ${c.dim}Tip: Install CUDA, Vulkan, or Metal support for GPU acceleration.${c.reset}`);
-      }
-      console.log(`  CPU:      ${device.cpuCores} math cores`);
-    } catch (error) {
-      console.log(`  Status:   ${c.dim}probe failed${c.reset}`);
-      if (error instanceof Error && error.message) {
-        console.log(`  ${c.dim}${sanitizeDiagnosticMessage(error.message)}${c.reset}`);
-      }
-    }
-  }
 
   // Tips section
   const tips: string[] = [];
@@ -1514,7 +1480,7 @@ function listFiles(pathArg?: string): void {
 
   // List files in the collection with size and modification time
   let query: string;
-  let params: any[];
+  let params: SQLiteValue[];
 
   if (pathPrefix) {
     // List files under a specific path
@@ -1764,7 +1730,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     let content: string;
     try {
       content = readFileSync(filepath, "utf-8");
-    } catch (err: any) {
+    } catch {
       // Skip files that can't be read (e.g. iCloud evicted files returning EAGAIN)
       processed++;
       progress.set((processed / total) * 100);
@@ -1929,7 +1895,7 @@ async function vectorIndex(
     return;
   }
 
-  console.log(`${c.dim}Model: ${model}${c.reset}\n`);
+  console.log(`${c.dim}Model: ${shortModelName(model)}${c.reset}\n`);
   if (batchOptions?.maxDocsPerBatch !== undefined || batchOptions?.maxBatchBytes !== undefined) {
     const maxDocsPerBatch = batchOptions.maxDocsPerBatch ?? DEFAULT_EMBED_MAX_DOCS_PER_BATCH;
     const maxBatchBytes = batchOptions.maxBatchBytes ?? DEFAULT_EMBED_MAX_BATCH_BYTES;
@@ -1949,21 +1915,28 @@ async function vectorIndex(
     chunkStrategy: batchOptions?.chunkStrategy,
     onProgress: (info) => {
       if (info.totalBytes === 0) return;
-      const percent = (info.bytesProcessed / info.totalBytes) * 100;
+      // Progress is measured by input bytes, not by chunks. The final chunk
+      // count is discovered lazily batch-by-batch, so displaying
+      // chunksEmbedded/totalChunks makes the percent look wrong when a few
+      // large documents remain. Show chunks as a count and label the byte
+      // percentage explicitly as input progress.
+      const percent = Math.min(100, (info.bytesProcessed / info.totalBytes) * 100);
       progress.set(percent);
 
       const elapsed = (Date.now() - startTime) / 1000;
-      const bytesPerSec = info.bytesProcessed / elapsed;
-      const remainingBytes = info.totalBytes - info.bytesProcessed;
-      const etaSec = remainingBytes / bytesPerSec;
+      const bytesPerSec = elapsed > 0 ? info.bytesProcessed / elapsed : 0;
+      const remainingBytes = Math.max(0, info.totalBytes - info.bytesProcessed);
+      const etaSec = bytesPerSec > 0 ? remainingBytes / bytesPerSec : Number.POSITIVE_INFINITY;
 
       const bar = renderProgressBar(percent);
       const percentStr = percent.toFixed(0).padStart(3);
-      const throughput = `${formatBytes(bytesPerSec)}/s`;
-      const eta = elapsed > 2 ? formatETA(etaSec) : "...";
-      const errStr = info.errors > 0 ? ` ${c.yellow}${info.errors} err${c.reset}` : "";
+      const throughput = bytesPerSec > 0 ? `${formatBytes(bytesPerSec)}/s` : ".../s";
+      const eta = elapsed > 2 && Number.isFinite(etaSec) ? formatETA(etaSec) : "...";
+      const inputStr = `${formatBytes(info.bytesProcessed)}/${formatBytes(info.totalBytes)} input`;
+      const chunkStr = `${formatCount(info.chunksEmbedded)} chunks`;
+      const errStr = info.errors > 0 ? ` ${c.yellow}${formatCount(info.errors)} err${c.reset}` : "";
 
-      if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}%${c.reset} ${c.dim}${info.chunksEmbedded}/${info.totalChunks}${c.reset}${errStr} ${c.dim}${throughput} ETA ${eta}${c.reset}   `);
+      if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}% input${c.reset} ${c.dim}${chunkStr}${errStr} · ${inputStr} · ${throughput} · ETA ${eta}${c.reset}   `);
     },
   });
 
@@ -1978,7 +1951,13 @@ async function vectorIndex(
     console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
     console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksEmbedded}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
     if (result.errors > 0) {
-      console.log(`${c.yellow}⚠ ${result.errors} chunks failed${c.reset}`);
+      console.log(`${c.yellow}⚠ ${formatCount(result.errors)} chunks still failed after retries${c.reset}`);
+      for (const failure of (result.failures ?? []).slice(0, 8)) {
+        console.log(`  ${c.dim}${failure.path}#${failure.seq} (${failure.attempts} attempts): ${failure.reason}${c.reset}`);
+      }
+      if ((result.failures?.length ?? 0) > 8) {
+        console.log(`  ${c.dim}...and ${formatCount((result.failures?.length ?? 0) - 8)} more${c.reset}`);
+      }
     }
   }
 
@@ -3457,7 +3436,6 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("QMD_FORCE_CPU", "forces llama.cpp to bypass GPU backends; embeddings/query will be slower but GPU crashes are avoided");
   add("QMD_LLAMA_GPU", "selects llama.cpp GPU backend (metal/cuda/vulkan) or disables GPU when set to false/off/0");
   add("QMD_DOCTOR_DEVICE_PROBE", "controls qmd doctor native device probing; 0/off skips GPU probing");
-  add("QMD_STATUS_DEVICE_PROBE", "controls qmd status native device probing only; qmd doctor probes independently");
   add("QMD_EMBED_PARALLELISM", "overrides embedding parallel context count; too high can exhaust RAM/VRAM");
   add("QMD_EXPAND_CONTEXT_SIZE", "overrides query expansion context size; larger values use more memory");
   add("QMD_RERANK_CONTEXT_SIZE", "overrides reranker context size; larger values use more memory");
@@ -3655,6 +3633,60 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
   };
 }
 
+function hasLibraryInDirs(libraryBaseName: string, dirs: string[]): boolean {
+  for (const dir of dirs) {
+    if (!dir || !existsSync(dir)) continue;
+    try {
+      for (const entry of readdirSync(dir)) {
+        if (entry === libraryBaseName || entry.startsWith(`${libraryBaseName}.`)) return true;
+      }
+    } catch { /* ignore unreadable system library dirs */ }
+  }
+  return false;
+}
+
+function linuxCudaRuntimeDiagnostic(): string | null {
+  if (process.platform !== "linux") return null;
+
+  const dirs = new Set<string>();
+  for (const value of [process.env.LD_LIBRARY_PATH, process.env.CUDA_PATH]) {
+    for (const part of (value ?? "").split(":")) {
+      if (part) dirs.add(part);
+    }
+  }
+  if (process.env.CUDA_PATH) {
+    dirs.add(pathJoin(process.env.CUDA_PATH, "lib64"));
+    dirs.add(pathJoin(process.env.CUDA_PATH, "targets", "x86_64-linux", "lib"));
+  }
+  for (const dir of ["/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/local/cuda/lib64", "/usr/local/cuda/targets/x86_64-linux/lib"]) {
+    dirs.add(dir);
+  }
+  try {
+    for (const entry of readdirSync("/usr/local")) {
+      if (!entry.toLowerCase().startsWith("cuda-")) continue;
+      const cudaRoot = pathJoin("/usr/local", entry);
+      dirs.add(pathJoin(cudaRoot, "lib64"));
+      dirs.add(pathJoin(cudaRoot, "targets", "x86_64-linux", "lib"));
+    }
+  } catch { /* /usr/local may not be readable in restricted environments */ }
+
+  const searchDirs = [...dirs];
+  const hasDriver = hasLibraryInDirs("libcuda.so", searchDirs) || hasLibraryInDirs("libnvidia-ml.so", searchDirs);
+  if (!hasDriver) return null;
+
+  const cudaLibraries: [library: string, label: string][] = [
+    ["libcudart.so", "CUDA runtime"],
+    ["libcublas.so", "cuBLAS"],
+    ["libcublasLt.so", "cuBLASLt"],
+  ];
+  const missing = cudaLibraries
+    .filter(([library]) => !hasLibraryInDirs(library, searchDirs))
+    .map(([, label]) => label);
+
+  if (missing.length === 0) return null;
+  return `NVIDIA driver libraries are visible, but CUDA user-space libraries are missing from loader paths (${missing.join(", ")})`;
+}
+
 async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
   const mode = configuredGpuModeLabel();
   doctorCheck("device mode", true, mode);
@@ -3691,8 +3723,14 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
         nextSteps.push("GPU was detected but offloading is disabled; check `QMD_LLAMA_GPU=metal|cuda|vulkan` and rerun `qmd doctor`.");
       }
     } else {
-      doctorCheck("device probe", false, `running on CPU (${device.cpuCores} math cores). Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`);
-      nextSteps.push("Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.");
+      const cudaDiagnostic = linuxCudaRuntimeDiagnostic();
+      const diagnosticSuffix = cudaDiagnostic ? ` ${cudaDiagnostic}.` : "";
+      doctorCheck("device probe", false, `running on CPU (${device.cpuCores} math cores).${diagnosticSuffix} Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`);
+      if (cudaDiagnostic) {
+        nextSteps.push(`${cudaDiagnostic}; install CUDA runtime/cuBLAS libraries or add their directory to LD_LIBRARY_PATH, then rerun \`qmd doctor\`.`);
+      } else {
+        nextSteps.push("Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.");
+      }
     }
   } catch (error) {
     if (process.stdout.isTTY) {
@@ -3779,6 +3817,15 @@ async function showDoctor(): Promise<void> {
       const label = row.fingerprint === fingerprint ? "current" : (row.fingerprint || "legacy");
       return `${shortModelName(row.model)}:${label} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`;
     }).join("; ");
+    const namedFingerprintRows = rows.filter(row => row.fingerprint);
+    const namedFingerprints = [...new Set(namedFingerprintRows.map(row => row.fingerprint))];
+    if (namedFingerprints.length > 1) {
+      const namedGroups = namedFingerprintRows
+        .map(row => `${row.fingerprint}${row.fingerprint === fingerprint ? " (current)" : ""}: ${shortModelName(row.model)} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`)
+        .join("; ");
+      doctorCheck("mixed named embedding fingerprints", false, `content_vectors contains ${namedFingerprints.length} named fingerprints: ${namedGroups}. Next: \`qmd embed\` or \`qmd embed --force\``);
+      nextSteps.push("Run `qmd embed` to converge mixed named embedding fingerprints; use `qmd embed --force` if old named fingerprints or vector sample mismatches remain.");
+    }
     const details = rows.length === 0
       ? `no vectors yet; current fingerprint ${fingerprint}`
       : ok
@@ -3815,7 +3862,23 @@ async function showDoctor(): Promise<void> {
   closeDb();
 }
 
-function readPackageJson(): any {
+function printDoctorHint(): void {
+  console.error("If qmd still behaves unexpectedly, run 'qmd doctor' for diagnostics.");
+}
+
+function exitWithError(error: unknown, code = 1): never {
+  console.error(error instanceof Error ? error.message : String(error));
+  printDoctorHint();
+  process.exit(code);
+}
+
+type PackageJson = {
+  version: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+
+function readPackageJson(): PackageJson {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const pkgPath = resolve(scriptDir, "..", "..", "package.json");
   return JSON.parse(readFileSync(pkgPath, "utf-8"));
@@ -4122,6 +4185,7 @@ if (isMain) {
         default:
           console.error(`Unknown subcommand: ${subcommand}`);
           console.error("Run 'qmd collection help' for usage");
+          printDoctorHint();
           process.exit(1);
       }
       break;
@@ -4131,8 +4195,7 @@ if (isMain) {
       try {
         initLocalIndex();
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        exitWithError(error);
       }
       break;
 
@@ -4166,8 +4229,7 @@ if (isMain) {
           collection: embedCollection,
         });
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        exitWithError(error);
       }
       break;
 
@@ -4314,8 +4376,8 @@ if (isMain) {
         const { startMcpHttpServer } = await import("../mcp/server.js");
         try {
           await startMcpHttpServer(port, { dbPath: getDbPath() });
-        } catch (e: any) {
-          if (e?.code === "EADDRINUSE") {
+        } catch (e: unknown) {
+          if (typeof e === "object" && e !== null && "code" in e && e.code === "EADDRINUSE") {
             console.error(`Port ${port} already in use. Try a different port with --port.`);
             process.exit(1);
           }
@@ -4359,8 +4421,7 @@ if (isMain) {
           try {
             await installSkill(Boolean(cli.values.global), Boolean(cli.values.force), Boolean(cli.values.yes));
           } catch (error) {
-            console.error(error instanceof Error ? error.message : String(error));
-            process.exit(1);
+            exitWithError(error);
           }
           break;
         }
@@ -4383,6 +4444,7 @@ if (isMain) {
         default:
           console.error(`Unknown subcommand: ${subcommand}`);
           console.error("Run 'qmd skill help' for usage");
+          printDoctorHint();
           process.exit(1);
       }
       break;
@@ -4420,6 +4482,7 @@ if (isMain) {
     default:
       console.error(`Unknown command: ${cli.command}`);
       console.error("Run 'qmd --help' for usage.");
+      printDoctorHint();
       process.exit(1);
   }
 

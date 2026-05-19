@@ -27,7 +27,7 @@ function makeTempFixture() {
   return { root, capturePath, runtimeBin };
 }
 
-function makePackage(root: string, packagePath: string, lockfiles: string[] = [], options: { dist?: boolean; source?: boolean; tsx?: boolean } = {}) {
+function makePackage(root: string, packagePath: string, lockfiles: string[] = [], options: { dist?: boolean; source?: boolean; tsx?: boolean; git?: boolean } = {}) {
   const packageRoot = join(root, packagePath);
   const includeDist = options.dist ?? true;
   mkdirSync(join(packageRoot, "bin"), { recursive: true });
@@ -44,6 +44,9 @@ function makePackage(root: string, packagePath: string, lockfiles: string[] = []
   if (options.tsx) {
     mkdirSync(join(packageRoot, "node_modules", "tsx", "dist"), { recursive: true });
     writeFileSync(join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs"), "// tsx fixture\n");
+  }
+  if (options.git) {
+    mkdirSync(join(packageRoot, ".git"), { recursive: true });
   }
   for (const lockfile of lockfiles) {
     writeFileSync(join(packageRoot, lockfile), "");
@@ -173,9 +176,19 @@ describe("bin/qmd package wrapper", () => {
     expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
   });
 
-  test("falls back to source with bun in an unbuilt Bun checkout", () => {
+  test("packaged tree uses dist even if source files are present", () => {
     const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "qmd", ["bun.lock"], { dist: false, source: true });
+    const packageRoot = makePackage(root, "node_modules/@tobilu/qmd", ["bun.lock"], { source: true });
+
+    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
+
+    expect(result.runtime).toBe("bun");
+    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
+  });
+
+  test("prefers source with bun in a Bun checkout even when dist exists", () => {
+    const { root, runtimeBin, capturePath } = makeTempFixture();
+    const packageRoot = makePackage(root, "qmd", ["bun.lock"], { source: true, git: true });
 
     const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
 
@@ -184,9 +197,9 @@ describe("bin/qmd package wrapper", () => {
     expect(result.args).toEqual(["--version"]);
   });
 
-  test("falls back to source through tsx in an unbuilt Node checkout", () => {
+  test("prefers source through tsx in a Node checkout even when dist exists", () => {
     const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "qmd", [], { dist: false, source: true, tsx: true });
+    const packageRoot = makePackage(root, "qmd", [], { source: true, tsx: true, git: true });
 
     const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
 
@@ -212,5 +225,6 @@ describe("bin/qmd package wrapper", () => {
     expect(result.stderr).toContain("qmd is not built");
     expect(result.stderr).toContain("bun install && bun run build");
     expect(result.stderr).toContain("npm install && npm run build");
+    expect(result.stderr).toContain("qmd doctor");
   });
 });

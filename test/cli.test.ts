@@ -630,7 +630,6 @@ describe("CLI Status Command", () => {
     const overrides = {
       XDG_CACHE_HOME: join(env.configDir, "cache"),
       QMD_DOCTOR_DEVICE_PROBE: "0",
-      QMD_STATUS_DEVICE_PROBE: "1",
       QMD_FORCE_CPU: "1",
       QMD_LLAMA_GPU: "metal",
       QMD_EMBED_PARALLELISM: "2",
@@ -665,15 +664,21 @@ describe("CLI Status Command", () => {
   test("qmd doctor flags mixed embedding fingerprints", async () => {
     const db = openDatabase(testDbPath);
     const doc = db.prepare(`SELECT hash FROM documents WHERE active = 1 LIMIT 1`).get() as { hash: string };
+    const now = new Date().toISOString();
     db.prepare(`
       INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
-      VALUES (?, 0, 0, ?, 'stale1', 1, ?)
-    `).run(doc.hash, resolveEmbedModelForCli(), new Date().toISOString());
+      VALUES (?, 0, 0, ?, 'stale1', 2, ?)
+    `).run(doc.hash, resolveEmbedModelForCli(), now);
+    db.prepare(`
+      INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES (?, 1, 1, ?, 'stale2', 2, ?)
+    `).run(doc.hash, resolveEmbedModelForCli(), now);
     db.close();
 
     const { stdout, exitCode } = await runQmd(["doctor"]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("embedding fingerprints");
+    expect(stdout).toContain("mixed named embedding fingerprints");
     expect(stdout).toContain("stale1");
   }, 20000);
 
@@ -684,13 +689,12 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("Collection");
   });
 
-  test("shows device mode without native probing by default", async () => {
+  test("status omits device probing details; doctor owns GPU diagnostics", async () => {
     const { stdout, exitCode } = await runQmd(["status"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Device");
-    expect(stdout).toContain("Mode:");
-    expect(stdout).toContain("not probed");
-    expect(stdout).toContain("QMD_STATUS_DEVICE_PROBE=1");
+    expect(stdout).not.toContain("Device");
+    expect(stdout).not.toContain("QMD_STATUS_DEVICE_PROBE");
+    expect(stdout).not.toContain("not probed");
   });
 });
 
@@ -973,8 +977,9 @@ describe("CLI Error Handling", () => {
   test("handles unknown command", async () => {
     const { stderr, exitCode } = await runQmd(["unknowncommand"]);
     expect(exitCode).toBe(1);
-    // Should indicate unknown command
+    // Should indicate unknown command and point users to diagnostics
     expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("qmd doctor");
   });
 
   test("uses INDEX_PATH environment variable", async () => {
@@ -1750,11 +1755,15 @@ describe("status and collection list hide filesystem paths", () => {
   });
 
   test("doctor does not show full filesystem paths", async () => {
-    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: localDbPath, configDir: localConfigDir });
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: localDbPath,
+      configDir: localConfigDir,
+      env: { QMD_DOCTOR_DEVICE_PROBE: "0" },
+    });
     expect(exitCode).toBe(0);
 
     expect(stdout).toContain("QMD Doctor");
-    const lines = stdout.split('\n').filter(l => !l.includes('Index:'));
+    const lines = stdout.split('\n').filter(l => !l.includes('Index:') && !l.includes('INDEX_PATH=') && !l.includes('QMD_CONFIG_DIR='));
     const pathLines = lines.filter(l => l.includes('/Users/') || l.includes('/home/') || l.includes('/tmp/'));
     expect(pathLines.length).toBe(0);
   }, 20000);
@@ -2079,6 +2088,7 @@ describe("mcp stdio launcher", () => {
     try {
       await mkdir(join(tempPackage, "bin"), { recursive: true });
       await mkdir(join(tempPackage, "dist", "cli"), { recursive: true });
+      await writeFile(join(tempPackage, "dist", "cli", "qmd.js"), "// fixture\n");
       await mkdir(join(tempPackage, "fake-bin"), { recursive: true });
 
       const qmdBin = join(tempPackage, "bin", "qmd");
