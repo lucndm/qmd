@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-05-19
+
 ### Changes
 
 - Dependencies: update core SQLite/config/chunking packages (`better-sqlite3`, `yaml`, `web-tree-sitter`, `tree-sitter-go`, and `tree-sitter-python`) while keeping incompatible `zod`, `tsx`, and `vitest` majors pinned.
