@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changes
+
+- Release: publish from GitHub Actions via npm Trusted Publishing/OIDC instead of a long-lived `NPM_TOKEN` secret.
+
 ## [2.5.0] - 2026-05-19
 
 ### Changes
