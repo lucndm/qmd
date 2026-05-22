@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 2>/dev/null; exec node "$0" "$@"
+// 2>/dev/null; if command -v node >/dev/null 2>&1; then exec node "$0" "$@"; else exec bun "$0" "$@"; fi
 // Cross-platform launcher for qmd.
 //
 // Previously this was a POSIX shell script with `#!/bin/sh`, which meant npm
