@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.5.2] - 2026-05-22
+
 ### Fixes
 
 - Launcher: Rewrite `bin/qmd` as a Node-based shebang polyglot to fix global npm installation execution failures on Windows (#668 / #452), while supporting seamless fallback to Bun in Node-less environments.
