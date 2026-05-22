@@ -17,10 +17,28 @@ function makeTempFixture() {
 
   for (const runtime of ["node", "bun"]) {
     const runtimePath = join(runtimeBin, runtime);
-    writeFileSync(
-      runtimePath,
-      `#!/bin/sh\n{\n  printf '%s\\n' '${runtime}'\n  printf '%s\\n' "$1"\n  shift\n  printf '%s\\n' "$@"\n} > "$QMD_WRAPPER_CAPTURE"\n`,
-    );
+    if (runtime === "node") {
+      writeFileSync(
+        runtimePath,
+        `#!/bin/sh
+if [ "$(basename "$1")" = "qmd" ]; then
+  exec "${process.execPath}" "$@"
+else
+  {
+    printf '%s\\n' 'node'
+    printf '%s\\n' "$1"
+    shift
+    printf '%s\\n' "$@"
+  } > "$QMD_WRAPPER_CAPTURE"
+fi
+`,
+      );
+    } else {
+      writeFileSync(
+        runtimePath,
+        `#!/bin/sh\n{\n  printf '%s\\n' '${runtime}'\n  printf '%s\\n' "$1"\n  shift\n  printf '%s\\n' "$@"\n} > "$QMD_WRAPPER_CAPTURE"\n`,
+      );
+    }
     chmodSync(runtimePath, 0o755);
   }
 
