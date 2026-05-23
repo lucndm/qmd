@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt
 
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN corepack enable pnpm && pnpm install
+RUN corepack enable pnpm && pnpm install --ignore-scripts
 COPY . .
 RUN pnpm run build
 
@@ -16,5 +16,5 @@ COPY --from=builder /app/bin ./bin
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 USER qmd
-EXPOSE 8182
+EXPOSE 8183
 ENTRYPOINT ["node", "bin/qmd"]
