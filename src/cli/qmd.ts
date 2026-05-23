@@ -82,6 +82,7 @@ import {
   type ChunkStrategy,
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { OpenAILLM, type OpenAILLMConfig } from "../llm-openai.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -126,21 +127,43 @@ let store: ReturnType<typeof createStore> | null = null;
 let storeDbPathOverride: string | undefined;
 let currentIndexName = "index";
 
+function resolveCliLLM(): LlamaCpp | OpenAILLM {
+  const backend = process.env.QMD_LLM_BACKEND || "local";
+  if (backend === "api") {
+    const config: OpenAILLMConfig = {
+      baseUrl: process.env.QMD_API_BASE_URL || "http://litellm:4000",
+      apiKey: process.env.QMD_API_KEY,
+      embedModel: process.env.QMD_EMBED_MODEL,
+      generateModel: process.env.QMD_GENERATE_MODEL,
+      rerankModel: process.env.QMD_RERANK_MODEL,
+    };
+    return new OpenAILLM(config);
+  }
+  const activeModels = ensureModelsConfiguredForCli();
+  return new LlamaCpp({
+    embedModel: activeModels.embed,
+    generateModel: activeModels.generate,
+    rerankModel: activeModels.rerank,
+  });
+}
+
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
-    // Sync YAML config into SQLite store_collections so store.ts reads from DB
     try {
-      const activeModels = ensureModelsConfiguredForCli();
       const config = loadConfig();
       syncConfigToDb(store.db, config);
-      setDefaultLlamaCpp(new LlamaCpp({
-        embedModel: activeModels.embed,
-        generateModel: activeModels.generate,
-        rerankModel: activeModels.rerank,
-      }));
     } catch {
       // Config may not exist yet — that's fine, DB works without it
+    }
+    const llm = resolveCliLLM();
+    if (llm instanceof LlamaCpp) {
+      setDefaultLlamaCpp(llm);
+    } else {
+      // API backend: set store.llm directly (LLM interface, not LlamaCpp class)
+      (store as any).llm = llm;
+      // Still set default for any code that falls back to getDefaultLlamaCpp()
+      setDefaultLlamaCpp(new LlamaCpp({ embedModel: "", generateModel: "", rerankModel: "" }));
     }
   }
   return store;
