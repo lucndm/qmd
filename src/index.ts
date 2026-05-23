@@ -86,9 +86,9 @@ function resolveLLMBackend(models?: ModelsConfig): LLMBackendConfig {
       config: {
         baseUrl: process.env.QMD_API_BASE_URL || models?.api_base_url || "http://litellm:4000",
         apiKey: process.env.QMD_API_KEY || models?.api_key,
-        embedModel: models?.embed,
-        generateModel: models?.generate,
-        rerankModel: models?.rerank,
+        embedModel: process.env.QMD_EMBED_MODEL || models?.embed,
+        generateModel: process.env.QMD_GENERATE_MODEL || models?.generate,
+        rerankModel: process.env.QMD_RERANK_MODEL || models?.rerank,
       },
     };
   }

@@ -32,9 +32,9 @@ export class OpenAILLM implements LLM {
 
   constructor(config: OpenAILLMConfig) {
     this.config = config;
-    this._embedModelName = config.embedModel || "embeddinggemma-300M";
-    this._generateModelName = config.generateModel || "qmd-query-expansion-1.7B";
-    this._rerankModelName = config.rerankModel || "qwen3-reranker-0.6b";
+    this._embedModelName = config.embedModel || "qwen3-embedding-small";
+    this._generateModelName = config.generateModel || "MiniMax-M2.7-highspeed";
+    this._rerankModelName = config.rerankModel || "qwen3-reranker-small";
   }
 
   get embedModelName(): string { return this._embedModelName; }
