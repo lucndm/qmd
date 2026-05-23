@@ -538,7 +538,7 @@ export interface LLM {
    * Expand a search query into multiple variations for different backends.
    * Returns a list of Queryable objects.
    */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean, intent?: string }): Promise<Queryable[]>;
 
   /**
    * Rerank documents by relevance to a query
@@ -550,6 +550,20 @@ export interface LLM {
    * Dispose of resources
    */
   dispose(): Promise<void>;
+
+  /** Model name getters — used for caching fingerprints and DB queries */
+  readonly embedModelName: string;
+  readonly generateModelName: string;
+  readonly rerankModelName: string;
+
+  /** Tokenize text — used for chunking. API backends use char estimation. */
+  tokenize(text: string): Promise<readonly number[]>;
+
+  /** Count tokens in text */
+  countTokens(text: string): Promise<number>;
+
+  /** Batch embed multiple texts */
+  embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
 }
 
 // =============================================================================
@@ -1895,6 +1909,41 @@ function getSessionManager(): LLMSessionManager {
 }
 
 /**
+ * Adapter wrapping any LLM into the ILLMSession interface.
+ * Used for non-LlamaCpp backends that don't need session management.
+ */
+class LLMSessionAdapter implements ILLMSession {
+  private readonly _llm: LLM;
+  private _released = false;
+  private readonly _abortController: AbortController;
+
+  constructor(llm: LLM) {
+    this._llm = llm;
+    this._abortController = new AbortController();
+  }
+
+  get isValid(): boolean { return !this._released; }
+  get signal(): AbortSignal { return this._abortController.signal; }
+
+  async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
+    return this._llm.embed(text, options);
+  }
+  async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
+    return this._llm.embedBatch(texts, options);
+  }
+  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; intent?: string }): Promise<Queryable[]> {
+    return this._llm.expandQuery(query, options);
+  }
+  async rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult> {
+    return this._llm.rerank(query, documents, options);
+  }
+  release(): void {
+    this._released = true;
+    this._abortController.abort(new Error("Session released"));
+  }
+}
+
+/**
  * Execute a function with a scoped LLM session.
  * The session provides lifecycle guarantees - resources won't be disposed mid-operation.
  *
@@ -1923,22 +1972,27 @@ export async function withLLMSession<T>(
 }
 
 /**
- * Execute a function with a scoped LLM session using a specific LlamaCpp instance.
- * Unlike withLLMSession, this does not use the global singleton.
+ * Execute a function with a scoped LLM session using a specific LLM instance.
+ * For LlamaCpp, uses the session manager with reference counting.
+ * For other backends, creates a thin adapter (stateless, no lifecycle management).
  */
 export async function withLLMSessionForLlm<T>(
-  llm: LlamaCpp,
+  llm: LLM,
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = new LLMSessionManager(llm);
-  const session = new LLMSession(manager, options);
-
-  try {
-    return await fn(session);
-  } finally {
-    session.release();
+  if (llm instanceof LlamaCpp) {
+    const manager = new LLMSessionManager(llm);
+    const session = new LLMSession(manager, options);
+    try {
+      return await fn(session);
+    } finally {
+      session.release();
+    }
   }
+  // Stateless adapter for non-LlamaCpp backends
+  const adapter = new LLMSessionAdapter(llm);
+  return fn(adapter);
 }
 
 /**

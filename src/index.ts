@@ -65,7 +65,35 @@ import {
 } from "./store.js";
 import {
   LlamaCpp,
+  type LLM,
 } from "./llm.js";
+import { OpenAILLM, type OpenAILLMConfig } from "./llm-openai.js";
+
+// Re-export OpenAI backend for direct use
+export { OpenAILLM, type OpenAILLMConfig };
+
+// ── LLM Backend Resolution ──────────────────────────────────────────────────
+
+type LLMBackendConfig =
+  | { type: "local" }
+  | { type: "api"; config: OpenAILLMConfig };
+
+function resolveLLMBackend(models?: ModelsConfig): LLMBackendConfig {
+  const backend = process.env.QMD_LLM_BACKEND || models?.backend || "local";
+  if (backend === "api") {
+    return {
+      type: "api",
+      config: {
+        baseUrl: process.env.QMD_API_BASE_URL || models?.api_base_url || "http://litellm:4000",
+        apiKey: process.env.QMD_API_KEY || models?.api_key,
+        embedModel: models?.embed,
+        generateModel: models?.generate,
+        rerankModel: models?.rerank,
+      },
+    };
+  }
+  return { type: "local" };
+}
 import {
   setConfigSource,
   loadConfig,
@@ -79,6 +107,7 @@ import {
   type CollectionConfig,
   type NamedCollection,
   type ContextMap,
+  type ModelsConfig,
 } from "./collections.js";
 
 // Re-export types for SDK consumers
@@ -368,15 +397,17 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // else: DB-only mode — no external config, use existing store_collections
 
-  // Create a per-store LlamaCpp instance — lazy-loads models on first use,
-  // auto-unloads after 5 min inactivity to free VRAM.
-  const llm = new LlamaCpp({
-    embedModel: config?.models?.embed,
-    generateModel: config?.models?.generate,
-    rerankModel: config?.models?.rerank,
-    inactivityTimeoutMs: 5 * 60 * 1000,
-    disposeModelsOnInactivity: true,
-  });
+  // Resolve LLM backend: "local" (LlamaCpp + GGUF) or "api" (OpenAI-compatible via LiteLLM proxy)
+  const backend = resolveLLMBackend(config?.models);
+  const llm: LLM = backend.type === "api"
+    ? new OpenAILLM(backend.config)
+    : new LlamaCpp({
+        embedModel: config?.models?.embed,
+        generateModel: config?.models?.generate,
+        rerankModel: config?.models?.rerank,
+        inactivityTimeoutMs: 5 * 60 * 1000,
+        disposeModelsOnInactivity: true,
+      });
   internal.llm = llm;
 
   const store: QMDStore = {

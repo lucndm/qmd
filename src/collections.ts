@@ -40,6 +40,9 @@ export interface ModelsConfig {
   embed?: string;
   rerank?: string;
   generate?: string;
+  backend?: "local" | "api";
+  api_base_url?: string;
+  api_key?: string;
 }
 
 /**

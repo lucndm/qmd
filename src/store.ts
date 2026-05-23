@@ -28,6 +28,7 @@ import {
   DEFAULT_EMBED_MODEL_URI,
   DEFAULT_RERANK_MODEL_URI,
   DEFAULT_GENERATE_MODEL_URI,
+  type LLM,
   type RerankDocument,
   type ILLMSession,
 } from "./llm.js";
@@ -80,7 +81,7 @@ export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): st
  * Get the LlamaCpp instance for a store — prefers the store's own instance,
  * falls back to the global singleton.
  */
-function getLlm(store: Store): LlamaCpp {
+function getLlm(store: Store): LLM {
   return store.llm ?? getDefaultLlamaCpp();
 }
 
@@ -1176,8 +1177,8 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
 export type Store = {
   db: Database;
   dbPath: string;
-  /** Optional LlamaCpp instance for this store (overrides the global singleton) */
-  llm?: LlamaCpp;
+  /** Optional LLM instance for this store (overrides the global singleton) */
+  llm?: LLM;
   close: () => void;
   ensureVecTable: (dimensions: number) => void;
 
@@ -1707,6 +1708,7 @@ export async function generateEmbeddings(
           doc.path,
           options?.chunkStrategy,
           session.signal,
+          llm,
         );
 
         for (let seq = 0; seq < chunks.length; seq++) {
@@ -2188,7 +2190,7 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   const llm = getLlm(store);
 
   return await withLLMSessionForLlm(llm, async (session) => {
-    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal, llm);
     const chunk = chunks[sample.seq];
     if (!chunk) {
       return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
@@ -2656,9 +2658,10 @@ export async function chunkDocumentByTokens(
   windowTokens: number = CHUNK_WINDOW_TOKENS,
   filepath?: string,
   chunkStrategy: ChunkStrategy = "regex",
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  llmOverride?: LLM
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
+  const llm = llmOverride ?? getDefaultLlamaCpp();
 
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
   // If chunks exceed limit, they'll be re-split with actual ratio
@@ -2718,7 +2721,10 @@ export async function chunkDocumentByTokens(
       || subChunks[0]?.text.length === text.length
     ) {
       const fallbackTokens = tokens.slice(0, Math.max(1, maxTokens));
-      const truncatedText = await llm.detokenize(fallbackTokens);
+      // For API backends without detokenize, fall back to character-based truncation
+      const truncatedText = 'detokenize' in llm && typeof (llm as any).detokenize === 'function'
+        ? await (llm as any).detokenize(fallbackTokens)
+        : text.slice(0, Math.floor(text.length * (maxTokens / tokens.length)));
       results.push({
         text: truncatedText,
         pos,
@@ -3618,7 +3624,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // Embeddings
 // =============================================================================
 
-async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LlamaCpp): Promise<number[] | null> {
+async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession, llmOverride?: LLM): Promise<number[] | null> {
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text, model) : formatDocForEmbedding(text, undefined, model);
   const result = session
@@ -3778,7 +3784,7 @@ function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<stri
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LLM): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
   const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
   const cached = getCachedResult(db, cacheKey);
@@ -3819,7 +3825,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<{ file: string; score: number }[]> {
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LLM): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
 

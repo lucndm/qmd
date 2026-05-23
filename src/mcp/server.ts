@@ -841,7 +841,7 @@ export async function startMcpHttpServer(
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on("error", reject);
-    httpServer.listen(port, "localhost", () => resolve());
+    httpServer.listen(port, process.env.QMD_BIND_ADDRESS || "0.0.0.0", () => resolve());
   });
 
   const actualPort = (httpServer.address() as import("net").AddressInfo).port;
@@ -869,7 +869,8 @@ export async function startMcpHttpServer(
     process.exit(0);
   });
 
-  log(`QMD MCP server listening on http://localhost:${actualPort}/mcp`);
+  const bindAddr = process.env.QMD_BIND_ADDRESS || "0.0.0.0";
+  log(`QMD MCP server listening on http://${bindAddr}:${actualPort}/mcp`);
   return { httpServer, port: actualPort, stop };
 }
 
