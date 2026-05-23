@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt
 
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN echo "build ${BUILD_DATE}" && corepack enable pnpm && NODE_LLAMA_CPP_SKIP_DOWNLOAD=1 pnpm install
+RUN echo "build ${BUILD_DATE}" && corepack enable pnpm && NODE_LLAMA_CPP_SKIP_DOWNLOAD=1 pnpm install --config.onlyBuiltDependencies="better-sqlite3" --config.onlyBuiltDependencies="esbuild" --config.onlyBuiltDependencies="node-llama-cpp" --config.onlyBuiltDependencies="tree-sitter-go" --config.onlyBuiltDependencies="tree-sitter-javascript" --config.onlyBuiltDependencies="tree-sitter-python" --config.onlyBuiltDependencies="tree-sitter-rust" --config.onlyBuiltDependencies="tree-sitter-typescript"
 COPY . .
 RUN pnpm run build
 
