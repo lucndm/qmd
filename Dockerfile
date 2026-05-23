@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt
 
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN corepack enable pnpm && NODE_LLAMA_CPP_SKIP_DOWNLOAD=1 pnpm install
+RUN echo "build ${BUILD_DATE}" && corepack enable pnpm && NODE_LLAMA_CPP_SKIP_DOWNLOAD=1 pnpm install
 COPY . .
 RUN pnpm run build
 
