@@ -543,6 +543,82 @@ Intent-aware lex (C++ performance, not sports):
     }
   );
 
+  // ---------------------------------------------------------------------------
+  // Tool: update (Re-index collections)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "update",
+    {
+      title: "Update Index",
+      description: "Re-index collections by scanning the filesystem for new, changed, or removed files. Run this after adding or modifying documents in indexed directories. Returns counts of indexed, updated, unchanged, and removed files.",
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      inputSchema: {
+        collections: z.array(z.string()).optional().describe(
+          "Specific collections to update (omit to update all). Use 'status' tool to see collection names."
+        ),
+      },
+    },
+    async ({ collections }) => {
+      const result = await store.update({
+        collections,
+      });
+
+      const lines = [
+        `Updated ${result.collections} collection(s):`,
+        `  New: ${result.indexed}`,
+        `  Updated: ${result.updated}`,
+        `  Unchanged: ${result.unchanged}`,
+        `  Removed: ${result.removed}`,
+      ];
+
+      if (result.needsEmbedding > 0) {
+        lines.push(`\n${result.needsEmbedding} documents need embedding. Run the 'embed' tool to generate vectors.`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join('\n') }],
+        structuredContent: result,
+      };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: embed (Generate vector embeddings)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "embed",
+    {
+      title: "Generate Embeddings",
+      description: "Generate vector embeddings for documents that need them. Run after 'update' to make new/changed documents searchable via semantic (vec/hyde) queries. Embeddings are generated in batches and may take time for large collections.",
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      inputSchema: {
+        collection: z.string().optional().describe("Restrict embedding to a single collection (omit for all)."),
+        force: z.boolean().optional().default(false).describe("Force re-embed all documents (default: false). Use after changing embedding model."),
+      },
+    },
+    async ({ collection, force }) => {
+      const result = await store.embed({
+        force: force ?? false,
+        collection,
+      });
+
+      const lines = [
+        `Embedded ${result.chunksEmbedded} chunks from ${result.docsProcessed} documents.`,
+      ];
+
+      if (result.errors > 0) {
+        lines.push(`Warning: ${result.errors} chunks failed after retries.`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join('\n') }],
+        structuredContent: result,
+      };
+    }
+  );
+
   return server;
 }
 
