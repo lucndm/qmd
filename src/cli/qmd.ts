@@ -951,15 +951,26 @@ function contextRemove(pathArg: string): void {
   console.log(`${c.green}✓${c.reset} Removed context for: qmd://${detected.collectionName}/${detected.relativePath}`);
 }
 
-function getDocument(filename: string, fromLine?: number, maxLines?: number, lineNumbers?: boolean): void {
-  // Parse :linenum suffix from filename (e.g., "file.md:100")
+function getDocument(filename: string, fromLine?: number, maxLines?: number, lineNumbers?: boolean, fullPath: boolean = false): void {
+  // Parse :line suffix from filename. Two forms:
+  //   "file.md:100"     -> start at line 100
+  //   "file.md:100:40"  -> start at line 100, read 40 lines
+  // The :// in virtual paths is never matched because we anchor digits to $.
+  // Explicit --from/-l flags always win over values parsed from the path.
   let inputPath = filename;
-  const colonMatch = inputPath.match(/:(\d+)$/);
-  if (colonMatch && !fromLine) {
-    const matched = colonMatch[1];
-    if (matched) {
-      fromLine = parseInt(matched, 10);
-      inputPath = inputPath.slice(0, -colonMatch[0].length);
+  const rangeMatch = inputPath.match(/:(\d+):(\d+)$/);
+  if (rangeMatch) {
+    if (fromLine === undefined) fromLine = parseInt(rangeMatch[1]!, 10);
+    if (maxLines === undefined) maxLines = parseInt(rangeMatch[2]!, 10);
+    inputPath = inputPath.slice(0, -rangeMatch[0].length);
+  } else {
+    const colonMatch = inputPath.match(/:(\d+)$/);
+    if (colonMatch) {
+      const matched = colonMatch[1];
+      if (matched) {
+        if (fromLine === undefined) fromLine = parseInt(matched, 10);
+        inputPath = inputPath.slice(0, -colonMatch[0].length);
+      }
     }
   }
   if (fromLine !== undefined) fromLine = Math.max(1, fromLine);
@@ -1113,6 +1124,30 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
   // Get context for this file
   const context = getContextForPath(db, doc.collectionName, doc.path);
 
+  // Resolve the docid (first 6 chars of the content hash) so callers always
+  // know what they retrieved and can cite it back to `get`/`multi-get`.
+  const hashRow = db.prepare(`
+    SELECT d.hash as hash
+    FROM documents d
+    WHERE d.collection = ? AND d.path = ? AND d.active = 1
+  `).get(doc.collectionName, doc.path) as { hash: string } | null;
+  const docid = hashRow?.hash ? hashRow.hash.slice(0, 6) : undefined;
+  const canonicalPath = buildVirtualPath(doc.collectionName, doc.path);
+
+  // --full-path: show the on-disk path instead of the qmd:// URL + docid, when
+  // the file actually exists. Fall back to the canonical header otherwise.
+  let header: string;
+  if (fullPath) {
+    const fsPath = resolveVirtualPath(db, canonicalPath);
+    if (fsPath && existsSync(fsPath)) {
+      header = fsPath;
+    } else {
+      header = docid ? `${canonicalPath}  #${docid}` : canonicalPath;
+    }
+  } else {
+    header = docid ? `${canonicalPath}  #${docid}` : canonicalPath;
+  }
+
   let output = doc.body;
   const startLine = fromLine || 1;
 
@@ -1124,21 +1159,25 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
     output = lines.slice(start, end).join('\n');
   }
 
-  // Add line numbers if requested
+  // Line numbers are on by default (disable with --no-line-numbers) so the
+  // model can cite exact lines and request follow-up ranges via path:from:count.
   if (lineNumbers) {
     output = addLineNumbers(output, startLine);
   }
 
-  // Output context header if exists
+  // Header: identify the document (path + docid, or the on-disk path with
+  // --full-path), then optional context.
+  console.log(header);
   if (context) {
-    console.log(`Folder Context: ${context}\n---\n`);
+    console.log(`Folder Context: ${context}`);
   }
+  console.log("---\n");
   console.log(output);
   closeDb();
 }
 
 // Multi-get: fetch multiple documents by glob pattern or comma-separated list
-function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT_MULTI_GET_MAX_BYTES, format: OutputFormat = "cli"): void {
+function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT_MULTI_GET_MAX_BYTES, format: OutputFormat = "cli", lineNumbers: boolean = true, fullPath: boolean = false): void {
   const db = getDb();
 
   // Check if it's a comma-separated list or a glob pattern
@@ -1226,7 +1265,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
   }
 
   // Collect results for structured output
-  const results: { file: string; displayPath: string; title: string; body: string; context: string | null; skipped: boolean; skipReason?: string }[] = [];
+  const results: { file: string; displayPath: string; fsPath?: string; docid?: string; title: string; body: string; context: string | null; skipped: boolean; skipReason?: string }[] = [];
 
   for (const file of files) {
     // Parse virtual path to get collection info if not already available
@@ -1244,11 +1283,28 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     // Get context using collection-scoped function
     const context = collection && path ? getContextForPath(db, collection, path) : null;
 
+    // Resolve docid (first 6 chars of content hash) so every entry can be cited.
+    const docidRow = collection && path ? db.prepare(`
+      SELECT d.hash as hash
+      FROM documents d
+      WHERE d.collection = ? AND d.path = ? AND d.active = 1
+    `).get(collection, path) as { hash: string } | null : null;
+    const docid = docidRow?.hash ? docidRow.hash.slice(0, 6) : undefined;
+
+    // --full-path: resolve the on-disk path when it exists (else fall back).
+    let fsPath: string | undefined;
+    if (fullPath) {
+      const resolved = resolveVirtualPath(db, file.filepath);
+      if (resolved && existsSync(resolved)) fsPath = resolved;
+    }
+
     // Check size limit
     if (file.bodyLength > maxBytes) {
       results.push({
         file: file.filepath,
         displayPath: file.displayPath,
+        fsPath,
+        docid,
         title: file.displayPath.split('/').pop() || file.displayPath,
         body: "",
         context,
@@ -1281,9 +1337,16 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       }
     }
 
+    // Line numbers on by default (disable with --no-line-numbers).
+    if (lineNumbers) {
+      body = addLineNumbers(body);
+    }
+
     results.push({
       file: file.filepath,
       displayPath: file.displayPath,
+      fsPath,
+      docid,
       title: doc.title || file.displayPath.split('/').pop() || file.displayPath,
       body,
       context,
@@ -1293,14 +1356,23 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
 
   closeDb();
 
+  // --full-path replaces the qmd:// path + docid with the on-disk path (when it
+  // resolved). Per result: pick the identifier and whether to show the docid.
+  const identOf = (r: typeof results[number]): string => (fullPath && r.fsPath) ? r.fsPath : r.displayPath;
+  const docidOf = (r: typeof results[number]): string | undefined => (fullPath && r.fsPath) ? undefined : r.docid;
+
   // Output based on format
   if (format === "json") {
-    const output = results.map(r => ({
-      file: r.displayPath,
-      title: r.title,
-      ...(r.context && { context: r.context }),
-      ...(r.skipped ? { skipped: true, reason: r.skipReason } : { body: r.body }),
-    }));
+    const output = results.map(r => {
+      const docidVal = docidOf(r);
+      return {
+        file: identOf(r),
+        ...(docidVal && { docid: `#${docidVal}` }),
+        title: r.title,
+        ...(r.context && { context: r.context }),
+        ...(r.skipped ? { skipped: true, reason: r.skipReason } : { body: r.body }),
+      };
+    });
     console.log(JSON.stringify(output, null, 2));
   } else if (format === "csv") {
     const escapeField = (val: string | null | undefined): string => {
@@ -1311,19 +1383,24 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       }
       return str;
     };
-    console.log("file,title,context,skipped,body");
+    console.log("docid,file,title,context,skipped,body");
     for (const r of results) {
-      console.log([r.displayPath, r.title, r.context, r.skipped ? "true" : "false", r.skipped ? r.skipReason : r.body].map(escapeField).join(","));
+      const docidVal = docidOf(r);
+      console.log([docidVal ? `#${docidVal}` : "", identOf(r), r.title, r.context, r.skipped ? "true" : "false", r.skipped ? r.skipReason : r.body].map(escapeField).join(","));
     }
   } else if (format === "files") {
     for (const r of results) {
+      const docidVal = docidOf(r);
+      const id = docidVal ? `#${docidVal} ` : "";
       const ctx = r.context ? `,"${r.context.replace(/"/g, '""')}"` : "";
       const status = r.skipped ? "[SKIPPED]" : "";
-      console.log(`${r.displayPath}${ctx}${status ? `,${status}` : ""}`);
+      console.log(`${id}${identOf(r)}${ctx}${status ? `,${status}` : ""}`);
     }
   } else if (format === "md") {
     for (const r of results) {
-      console.log(`## ${r.displayPath}\n`);
+      const docidVal = docidOf(r);
+      console.log(`## ${identOf(r)}\n`);
+      if (docidVal) console.log(`**docid:** \`#${docidVal}\`\n`);
       if (r.title && r.title !== r.displayPath) console.log(`**Title:** ${r.title}\n`);
       if (r.context) console.log(`**Context:** ${r.context}\n`);
       if (r.skipped) {
@@ -1338,8 +1415,10 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     console.log('<?xml version="1.0" encoding="UTF-8"?>');
     console.log("<documents>");
     for (const r of results) {
-      console.log("  <document>");
-      console.log(`    <file>${escapeXml(r.displayPath)}</file>`);
+      const docidVal = docidOf(r);
+      const docidAttr = docidVal ? ` docid="#${docidVal}"` : "";
+      console.log(`  <document${docidAttr}>`);
+      console.log(`    <file>${escapeXml(identOf(r))}</file>`);
       console.log(`    <title>${escapeXml(r.title)}</title>`);
       if (r.context) console.log(`    <context>${escapeXml(r.context)}</context>`);
       if (r.skipped) {
@@ -1354,8 +1433,10 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
   } else {
     // CLI format (default)
     for (const r of results) {
+      const docidVal = docidOf(r);
+      const id = docidVal ? `  #${docidVal}` : "";
       console.log(`\n${'='.repeat(60)}`);
-      console.log(`File: ${r.displayPath}`);
+      console.log(`File: ${identOf(r)}${id}`);
       console.log(`${'='.repeat(60)}\n`);
 
       if (r.skipped) {
@@ -2726,7 +2807,9 @@ function parseCLI() {
       l: { type: "string" },  // max lines
       from: { type: "string" },  // start line
       "max-bytes": { type: "string" },  // max bytes for multi-get
-      "line-numbers": { type: "boolean" },  // add line numbers to output
+      "line-numbers": { type: "boolean" },  // add line numbers to output (search; default on for get/multi-get)
+      "no-line-numbers": { type: "boolean" },  // disable line numbers for get/multi-get
+      "full-path": { type: "boolean" },  // get/multi-get: show on-disk path instead of qmd:// + docid
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
@@ -3222,7 +3305,7 @@ function showHelp(): void {
   console.log("  qmd query 'lex:..\\nvec:...'   - Structured query document (you provide lex/vec/hyde lines)");
   console.log("  qmd search <query>            - Full-text BM25 keywords (no LLM)");
   console.log("  qmd vsearch <query>           - Vector similarity only");
-  console.log("  qmd get <file>[:line] [-l N]  - Show a single document, optional line slice");
+  console.log("  qmd get <file>[:from[:count]] - Show a document (line-numbered; #docid in header)");
   console.log("  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list");
   console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
   console.log("  qmd skill show/install        - Show or install the QMD skill");
@@ -3297,7 +3380,9 @@ function showHelp(): void {
   console.log("  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)");
   console.log("  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)");
   console.log("  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)");
-  console.log("  --line-numbers             - Include line numbers in output");
+  console.log("  --line-numbers             - Include line numbers (search; get/multi-get are on by default)");
+  console.log("  --no-line-numbers          - Disable line numbers for get/multi-get");
+  console.log("  --full-path                - get/multi-get: show on-disk path instead of qmd:// + docid (if file exists)");
   console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
   console.log("  --files | --json | --csv | --md | --xml  - Output format");
   console.log("  -c, --collection <name>    - Filter by one or more collections");
@@ -4023,24 +4108,28 @@ if (isMain) {
 
     case "get": {
       if (!cli.args[0]) {
-        console.error("Usage: qmd get <filepath>[:line] [--from <line>] [-l <lines>] [--line-numbers]");
+        console.error("Usage: qmd get <filepath>[:from[:count]] [--from <line>] [-l <lines>] [--no-line-numbers] [--full-path]");
         process.exit(1);
       }
       const fromLine = cli.values.from ? parseInt(cli.values.from as string, 10) : undefined;
       const maxLines = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
-      getDocument(cli.args[0], fromLine, maxLines, cli.opts.lineNumbers);
+      // Line numbers default ON for get; opt out with --no-line-numbers.
+      const getLineNumbers = !cli.values["no-line-numbers"];
+      getDocument(cli.args[0], fromLine, maxLines, getLineNumbers, !!cli.values["full-path"]);
       break;
     }
 
     case "multi-get": {
       if (!cli.args[0]) {
-        console.error("Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--json|--csv|--md|--xml|--files]");
+        console.error("Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--no-line-numbers] [--full-path] [--json|--csv|--md|--xml|--files]");
         console.error("  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list");
         process.exit(1);
       }
       const maxLinesMulti = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
       const maxBytes = cli.values["max-bytes"] ? parseInt(cli.values["max-bytes"] as string, 10) : DEFAULT_MULTI_GET_MAX_BYTES;
-      multiGet(cli.args[0], maxLinesMulti, maxBytes, cli.opts.format);
+      // Line numbers default ON for multi-get; opt out with --no-line-numbers.
+      const mgLineNumbers = !cli.values["no-line-numbers"];
+      multiGet(cli.args[0], maxLinesMulti, maxBytes, cli.opts.format, mgLineNumbers, !!cli.values["full-path"]);
       break;
     }
 

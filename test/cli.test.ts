@@ -867,6 +867,54 @@ describe("CLI Multi-Get Command", () => {
     expect(stdout).toContain("Test Project");
     expect(stdout).toContain("Team Meeting");
   });
+
+  test("--md output includes a #docid for each file", async () => {
+    const { stdout, exitCode } = await runQmd(["multi-get", "notes/*.md", "--md"], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    // Every result carries a docid line, consistent with `search --md`.
+    expect(stdout).toMatch(/\*\*docid:\*\* `#[a-f0-9]{6}`/);
+  });
+
+  test("--json output includes a #docid for each file", async () => {
+    const { stdout, exitCode } = await runQmd(["multi-get", "notes/*.md", "--json"], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.length).toBeGreaterThan(0);
+    for (const entry of parsed) {
+      expect(entry.docid).toMatch(/^#[a-f0-9]{6}$/);
+    }
+  });
+
+  test("shows line numbers by default and --no-line-numbers disables them", async () => {
+    const withNums = await runQmd(["multi-get", "README.md"], { dbPath: localDbPath });
+    expect(withNums.exitCode).toBe(0);
+    expect(withNums.stdout).toMatch(/^1: /m);
+
+    const raw = await runQmd(["multi-get", "README.md", "--no-line-numbers"], { dbPath: localDbPath });
+    expect(raw.exitCode).toBe(0);
+    expect(raw.stdout).not.toMatch(/^1: /m);
+  });
+
+  test("--full-path --md shows on-disk paths and drops the docid", async () => {
+    const { stdout, exitCode } = await runQmd(["multi-get", "notes/*.md", "--md", "--full-path"], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    // Headings are absolute filesystem paths under the fixtures dir.
+    expect(stdout).toContain(`## ${fixturesDir}`);
+    expect(stdout).toContain("notes/meeting.md");
+    expect(stdout).not.toContain("qmd://");
+    expect(stdout).not.toMatch(/\*\*docid:\*\*/);
+  });
+
+  test("--full-path --json puts the fs path in `file` and omits docid", async () => {
+    const { stdout, exitCode } = await runQmd(["multi-get", "notes/*.md", "--json", "--full-path"], { dbPath: localDbPath });
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.length).toBeGreaterThan(0);
+    for (const entry of parsed) {
+      expect(entry.file.startsWith(fixturesDir)).toBe(true);
+      expect(entry.docid).toBeUndefined();
+    }
+  });
 });
 
 describe("CLI Update Command", () => {
@@ -1718,6 +1766,92 @@ describe("get command path normalization", () => {
     expect(exitCode).toBe(0);
     // Should start from line 3, not line 1
     expect(stdout).not.toMatch(/^# Test Document 1$/m);
+  });
+
+  test("get with path:from:count format reads a bounded range", async () => {
+    // Lines: 1 "# Test Document 1", 5 "It has multiple lines...",
+    //        6 "Line 6 is here.", 7 "Line 7 is here."
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:5:2`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("It has multiple lines");
+    expect(stdout).toContain("Line 6 is here.");
+    // Bounded to 2 lines: must not include the start of the file or line 7
+    expect(stdout).not.toMatch(/^# Test Document 1$/m);
+    expect(stdout).not.toContain("Line 7 is here.");
+  });
+
+  test("get with qmd://path:from:count format reads a bounded range", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `qmd://${collName}/test1.md:5:2`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("It has multiple lines");
+    expect(stdout).toContain("Line 6 is here.");
+    expect(stdout).not.toMatch(/^# Test Document 1$/m);
+    expect(stdout).not.toContain("Line 7 is here.");
+  });
+
+  test("explicit -l overrides the :count in path:from:count", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:5:2`, "-l", "1"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("It has multiple lines");
+    expect(stdout).not.toContain("Line 6 is here.");
+  });
+
+  test("get header includes canonical qmd:// path and a #docid", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    // First line of output identifies the document by path + docid.
+    expect(stdout).toMatch(new RegExp(`^qmd://${collName}/test1\\.md\\s+#[a-f0-9]{6}`, "m"));
+  });
+
+  test("get shows line numbers by default", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(/^1: # Test Document 1$/m);
+    expect(stdout).toMatch(/^6: Line 6 is here\.$/m);
+  });
+
+  test("get --no-line-numbers returns raw content", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md`, "--no-line-numbers"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toMatch(/^1: /m);
+    expect(stdout).toMatch(/^# Test Document 1$/m);
+  });
+
+  test("get line numbers reflect the start line of a range", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:5:2`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    // Numbering starts at the requested line, not at 1.
+    expect(stdout).toMatch(/^5: It has multiple lines/m);
+    expect(stdout).not.toMatch(/^1: /m);
+  });
+
+  test("get --full-path shows the on-disk path instead of qmd:// + docid", async () => {
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md`, "--full-path"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    // Header is an absolute filesystem path ending in the file; no qmd:// URL, no docid.
+    // (Use a loose match so macOS /var → /private/var symlink normalization is fine.)
+    expect(stdout).toMatch(/^\/.+\/test1\.md$/m);
+    expect(stdout).toContain("test1.md");
+    expect(stdout).not.toContain("qmd://");
+    expect(stdout).not.toMatch(/#[a-f0-9]{6}/);
+    // Body still present and line-numbered.
+    expect(stdout).toMatch(/^1: # Test Document 1$/m);
+  });
+
+  test("get --full-path falls back to qmd:// + docid when the file is gone", async () => {
+    // Index a doc, then delete the underlying file so the fs path no longer exists.
+    const env = await createIsolatedTestEnv("full-path-fallback");
+    const collectionDir = join(testDir, `gone-fixtures-${Date.now()}`);
+    await mkdir(collectionDir, { recursive: true });
+    const gonePath = join(collectionDir, "gone.md");
+    await writeFile(gonePath, "# Gone\n\nbody line\n");
+    const add = await runQmd(["collection", "add", collectionDir, "--name", "gonecoll"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(add.exitCode).toBe(0);
+    await rm(gonePath);
+
+    const { stdout, exitCode } = await runQmd(["get", "gonecoll/gone.md", "--full-path"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(new RegExp(`^qmd://gonecoll/gone\\.md\\s+#[a-f0-9]{6}`, "m"));
   });
 });
 
