@@ -19,6 +19,15 @@
   `qmd://` path + `#docid` with the document's on-disk filesystem path (handy for
   piping into `Read`/`Edit`/an editor). Falls back to the canonical `qmd://` +
   docid header when the file no longer exists on disk.
+- `qmd search` / `qmd query` now show a clearer hit identifier: the default CLI
+  view (and the new `**file:**` line in `--md` output) always prints the full
+  `qmd://collection/path` URI so you can pipe it straight back into `qmd get`.
+- `qmd search` / `qmd query` accept `--full-path` with the same semantics as
+  `qmd get`: the result label becomes the file's on-disk path — relative to
+  `$PWD` when the file lives in a subfolder of the current directory, absolute
+  realpath otherwise — and the per-result `#docid` is dropped because the path
+  is the identifier. Applies to all output formats (`cli`, `--json`, `--md`,
+  `--csv`, `--xml`, `--files`).
 
 ### Docs
 

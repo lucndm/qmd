@@ -2101,6 +2101,7 @@ type OutputOptions = {
   intent?: string;       // Domain intent for disambiguation
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
+  fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2251,6 +2252,33 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     );
   };
 
+  // Helper to pick the visible path for a result. With --full-path we swap
+  // the qmd:// URI for the file's on-disk path: relative to $PWD when the
+  // file lives inside the current working directory, otherwise absolute
+  // (realpath, so symlinks resolve consistently). Falls back to qmd:// if
+  // the file is no longer resolvable on disk.
+  const linkDbForPaths = opts.fullPath ? getDb() : null;
+  const cwd = process.cwd();
+  const displayPathFor = (row: OutputRow): string => {
+    // Always rebuild from displayPath so the active index name is included
+    // as ?index=… for non-default indexes. row.file may not carry it.
+    const qmdUri = toQmdPath(row.displayPath);
+    if (!opts.fullPath || !linkDbForPaths) return qmdUri;
+    const absolute = resolveVirtualPath(linkDbForPaths, qmdUri);
+    if (!absolute || !existsSync(absolute)) return qmdUri;
+    let real: string;
+    try { real = realpathSync(absolute); } catch { real = absolute; }
+    const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
+    if (real === cwdReal) return ".";
+    if (real.startsWith(cwdReal + "/")) {
+      const rel = relativePath(cwdReal, real);
+      // Only show as relative when the file is *under* $PWD. If `relative()`
+      // produced a leading "../" (sibling/parent), fall back to absolute.
+      if (rel && !rel.startsWith("..")) return rel;
+    }
+    return real;
+  };
+
   if (opts.format === "json") {
     // JSON output for LLM consumption
     const output = filtered.map(row => {
@@ -2262,10 +2290,11 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         if (body) body = addLineNumbers(body);
         if (snippet) snippet = addLineNumbers(snippet);
       }
+      // With --full-path, omit docid (the on-disk path is the identifier).
       return {
-        ...(docid && { docid: `#${docid}` }),
+        ...(docid && !opts.fullPath && { docid: `#${docid}` }),
         score: Math.round(row.score * 100) / 100,
-        file: toQmdPath(row.displayPath),
+        file: displayPathFor(row),
         line: snippetInfo.line,
         title: row.title,
         ...(row.context && { context: row.context }),
@@ -2280,7 +2309,12 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     for (const row of filtered) {
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
       const ctx = row.context ? `,"${row.context.replace(/"/g, '""')}"` : "";
-      console.log(`#${docid},${row.score.toFixed(2)},${toQmdPath(row.displayPath)}${ctx}`);
+      if (opts.fullPath) {
+        // --full-path: drop the docid, the on-disk path is the identifier.
+        console.log(`${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+      } else {
+        console.log(`#${docid},${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+      }
     }
   } else if (opts.format === "cli") {
     const editorUriTemplate = getEditorUriTemplate();
@@ -2293,26 +2327,32 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
 
       // Line 1: filepath with docid
-      const virtualPath = row.file.startsWith("qmd://") ? row.file : toQmdPath(row.displayPath);
+      // Default: show the full qmd:// URI so the user can see which collection
+      // a hit lives in and can pipe the same string straight back into
+      // `qmd get`. A bare collection-relative path like `sources/foo.md` is
+      // ambiguous: it's not a real filesystem path, not a URI, and not a
+      // shell-friendly identifier on its own.
+      // With --full-path the visible label is the file's on-disk path
+      // ($PWD-relative when in a subfolder; absolute realpath otherwise),
+      // and the docid is omitted because the path is the identifier.
+      const virtualPath = toQmdPath(row.displayPath);
       const parsed = parseVirtualPath(virtualPath);
       const absolutePath = resolveVirtualPath(linkDb, virtualPath);
-
-      const legacyPath = toQmdPath(row.displayPath);
-      const displayPath = parsed?.path || row.displayPath;
+      const visiblePath = displayPathFor(row);
 
       // Only show :line if we actually found a term match in the snippet body (exclude header line).
       const snippetBody = snippet.split("\n").slice(1).join("\n").toLowerCase();
       const hasMatch = query.toLowerCase().split(/\s+/).some(t => t.length > 0 && snippetBody.includes(t));
       const lineInfo = hasMatch ? `:${line}` : "";
-      const docidStr = docid ? ` ${c.dim}#${docid}${c.reset}` : "";
+      const docidStr = (docid && !opts.fullPath) ? ` ${c.dim}#${docid}${c.reset}` : "";
 
       if (process.stdout.isTTY && absolutePath && parsed?.path) {
         const linkLine = hasMatch ? line : 1;
         const linkTarget = buildEditorUri(editorUriTemplate, absolutePath, linkLine, 1);
-        const clickable = termLink(`${displayPath}${lineInfo}`, linkTarget);
+        const clickable = termLink(`${visiblePath}${lineInfo}`, linkTarget);
         console.log(`${c.cyan}${clickable}${c.reset}${docidStr}`);
       } else {
-        console.log(`${c.cyan}${legacyPath}${c.dim}${lineInfo}${c.reset}${docidStr}`);
+        console.log(`${c.cyan}${visiblePath}${c.dim}${lineInfo}${c.reset}${docidStr}`);
       }
 
       // Line 2: Title (if available)
@@ -2365,15 +2405,18 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     for (let i = 0; i < filtered.length; i++) {
       const row = filtered[i];
       if (!row) continue;
-      const heading = row.title || row.displayPath;
+      const visiblePath = displayPathFor(row);
+      const heading = row.title || visiblePath;
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
       let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
-      const docidLine = docid ? `**docid:** \`#${docid}\`\n` : "";
+      const fileLine = `**file:** \`${visiblePath}\`\n`;
+      // With --full-path the on-disk path is the identifier; drop the docid line.
+      const docidLine = (docid && !opts.fullPath) ? `**docid:** \`#${docid}\`\n` : "";
       const contextLine = row.context ? `**context:** ${row.context}\n` : "";
-      console.log(`---\n# ${heading}\n${docidLine}${contextLine}\n${content}\n`);
+      console.log(`---\n# ${heading}\n${fileLine}${docidLine}${contextLine}\n${content}\n`);
     }
   } else if (opts.format === "xml") {
     for (const row of filtered) {
@@ -2384,11 +2427,15 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
-      console.log(`<file docid="#${docid}" name="${toQmdPath(row.displayPath)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`);
+      const docidAttr = opts.fullPath ? "" : ` docid="#${docid}"`;
+      console.log(`<file${docidAttr} name="${displayPathFor(row)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`);
     }
   } else {
     // CSV format
-    console.log("docid,score,file,title,context,line,snippet");
+    const csvHeader = opts.fullPath
+      ? "score,file,title,context,line,snippet"
+      : "docid,score,file,title,context,line,snippet";
+    console.log(csvHeader);
     for (const row of filtered) {
       const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent);
       let content = opts.full ? row.body : snippet;
@@ -2397,7 +2444,13 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       }
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
       const snippetText = content || "";
-      console.log(`#${docid},${row.score.toFixed(4)},${escapeCSV(toQmdPath(row.displayPath))},${escapeCSV(row.title || "")},${escapeCSV(row.context || "")},${line},${escapeCSV(snippetText)}`);
+      const path = escapeCSV(displayPathFor(row));
+      const tail = `${path},${escapeCSV(row.title || "")},${escapeCSV(row.context || "")},${line},${escapeCSV(snippetText)}`;
+      if (opts.fullPath) {
+        console.log(`${row.score.toFixed(4)},${tail}`);
+      } else {
+        console.log(`#${docid},${row.score.toFixed(4)},${tail}`);
+      }
     }
   }
 }
@@ -2809,7 +2862,7 @@ function parseCLI() {
       "max-bytes": { type: "string" },  // max bytes for multi-get
       "line-numbers": { type: "boolean" },  // add line numbers to output (search; default on for get/multi-get)
       "no-line-numbers": { type: "boolean" },  // disable line numbers for get/multi-get
-      "full-path": { type: "boolean" },  // get/multi-get: show on-disk path instead of qmd:// + docid
+      "full-path": { type: "boolean" },  // show on-disk paths instead of qmd:// (get/multi-get/search/query)
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
@@ -2874,6 +2927,7 @@ function parseCLI() {
     explain: !!values.explain,
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
+    fullPath: !!values["full-path"],
   };
 
   return {
@@ -3382,7 +3436,8 @@ function showHelp(): void {
   console.log("  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)");
   console.log("  --line-numbers             - Include line numbers (search; get/multi-get are on by default)");
   console.log("  --no-line-numbers          - Disable line numbers for get/multi-get");
-  console.log("  --full-path                - get/multi-get: show on-disk path instead of qmd:// + docid (if file exists)");
+  console.log("  --full-path                - Show on-disk paths instead of qmd:// + docid (get/multi-get/search/query)");
+  console.log("                                Paths are relative to $PWD when in a subfolder, absolute otherwise");
   console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
   console.log("  --files | --json | --csv | --md | --xml  - Output format");
   console.log("  -c, --collection <name>    - Filter by one or more collections");

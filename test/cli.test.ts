@@ -1639,12 +1639,15 @@ describe("search output formats", () => {
     expect(stdout).not.toMatch(/\/home\//);
   });
 
-  test("search --md includes docid and context", async () => {
+  test("search --md includes docid, context, and qmd:// file line", async () => {
     const { stdout, exitCode } = await runQmd(["search", "test", "--md", "-n", "1"], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
 
     expect(stdout).toMatch(/\*\*docid:\*\* `#[a-f0-9]{6}`/);
     expect(stdout).toContain("**context:** Test fixtures for QMD");
+    // The file path must be a qmd:// URI so the model can pipe it back into
+    // `qmd get` without having to reassemble a collection-relative string.
+    expect(stdout).toMatch(new RegExp(`\\*\\*file:\\*\\* \`qmd://${collName}/`));
   });
 
   test("search --xml includes qmd:// path, docid, and context", async () => {
@@ -1658,6 +1661,65 @@ describe("search output formats", () => {
     expect(stdout).not.toMatch(/\/home\//);
   });
 
+  test("search --full-path --json swaps qmd:// for absolute realpath when cwd is unrelated", async () => {
+    // Use "/" as cwd so the fixtures path (under tmpdir) is NOT a subpath of $PWD.
+    const { stdout, exitCode } = await runQmd(
+      ["search", "test", "--full-path", "--json", "-n", "1"],
+      { dbPath: localDbPath, configDir: localConfigDir, cwd: "/" }
+    );
+    expect(exitCode).toBe(0);
+    const results = JSON.parse(stdout);
+    expect(results.length).toBeGreaterThan(0);
+    const result = results[0];
+    expect(result.file).not.toMatch(/^qmd:\/\//);
+    // Must be an absolute path ending in .md.
+    expect(result.file).toMatch(/^\/.+\.md$/);
+    // --full-path: the on-disk path replaces the docid as the identifier.
+    expect(result.docid).toBeUndefined();
+  });
+
+  test("search --full-path --json uses $PWD-relative path when in a parent of the file", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["search", "test", "--full-path", "--json", "-n", "1"],
+      { dbPath: localDbPath, configDir: localConfigDir, cwd: fixturesDir }
+    );
+    expect(exitCode).toBe(0);
+    const results = JSON.parse(stdout);
+    expect(results.length).toBeGreaterThan(0);
+    const result = results[0];
+    expect(result.file).not.toMatch(/^qmd:\/\//);
+    // Should be relative (no leading slash) because the file is inside $PWD.
+    expect(result.file.startsWith("/")).toBe(false);
+    expect(result.file).not.toMatch(/^\.\.\//);
+    expect(result.file).toMatch(/\.md$/);
+  });
+
+  test("search --full-path default CLI format shows on-disk path and drops the docid", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["search", "test", "--full-path", "-n", "1"],
+      { dbPath: localDbPath, configDir: localConfigDir, cwd: "/" }
+    );
+    expect(exitCode).toBe(0);
+    // eslint-disable-next-line no-control-regex
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07]*\x07/g, "");
+    const plain = stripAnsi(stdout);
+    expect(plain).not.toMatch(/qmd:\/\//);
+    expect(plain).toMatch(/^\/.+\.md/m);
+    // No `#docid` suffix when --full-path is set.
+    expect(plain).not.toMatch(/#[a-f0-9]{6}\s*$/m);
+  });
+
+  test("search --full-path --md uses on-disk path in heading and drops the docid", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["search", "test", "--full-path", "--md", "-n", "1"],
+      { dbPath: localDbPath, configDir: localConfigDir, cwd: "/" }
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toMatch(/qmd:\/\//);
+    expect(stdout).not.toMatch(/\*\*docid:\*\*/);
+    expect(stdout).toMatch(/\*\*file:\*\* `\/.+\.md`/);
+  });
+
   test("search default CLI format includes plain qmd:// path, docid, and context in non-TTY mode", async () => {
     const { stdout, exitCode } = await runQmd(["search", "test", "-n", "1"], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
@@ -1669,6 +1731,14 @@ describe("search output formats", () => {
     // Ensure no full filesystem paths
     expect(stdout).not.toMatch(/\/Users\//);
     expect(stdout).not.toMatch(/\/home\//);
+    // The visible path must NOT be the bare collection-relative form
+    // (a leading `${collName}/foo.md` would be "relative to nowhere").
+    // Strip ANSI and OSC 8 sequences then assert no result line starts with
+    // a bare collection-relative path missing the qmd:// scheme.
+    // eslint-disable-next-line no-control-regex
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07]*\x07/g, "");
+    const plain = stripAnsi(stdout);
+    expect(plain).not.toMatch(new RegExp(`^${collName}/`, "m"));
   });
 });
 

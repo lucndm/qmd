@@ -140,6 +140,13 @@ $ qmd get "#abc123" --full-path
 1: # Metrics as instruments
 ```
 
+`--full-path` works the same way on `qmd search` and `qmd query`: result paths
+become the file's on-disk path — relative to `$PWD` when the file is inside the
+current directory, absolute otherwise — and the per-result `#docid` is dropped
+because the path is the identifier. Default search/query output still uses
+`qmd://` URIs; only opt into `--full-path` when you specifically need a path you
+can hand to a non-QMD tool.
+
 ### Read line ranges with the `:from:count` suffix — never pipe through `sed`/`head`/`tail`
 
 `qmd get` slices files itself. Use the suffix or flags; do **not** shell out to
