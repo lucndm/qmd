@@ -951,6 +951,28 @@ function contextRemove(pathArg: string): void {
   console.log(`${c.green}✓${c.reset} Removed context for: qmd://${detected.collectionName}/${detected.relativePath}`);
 }
 
+/**
+ * Render an absolute filesystem path for human display under --full-path.
+ *
+ * If the path is the current working directory or a subpath of it, return a
+ * "./"-prefixed relative path so it is unambiguously a filesystem path (not a
+ * bare collection-relative string that could be confused for a `qmd://`
+ * fragment). Otherwise return the absolute realpath so symlinks resolve
+ * consistently. Returns `null` if the path could not be normalized — callers
+ * fall back to whatever they had before.
+ */
+function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string {
+  let real: string;
+  try { real = realpathSync(absolutePath); } catch { real = absolutePath; }
+  const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
+  if (real === cwdReal) return "./";
+  if (real.startsWith(cwdReal + "/")) {
+    const rel = relativePath(cwdReal, real);
+    if (rel && !rel.startsWith("..")) return `./${rel}`;
+  }
+  return real;
+}
+
 function getDocument(filename: string, fromLine?: number, maxLines?: number, lineNumbers?: boolean, fullPath: boolean = false): void {
   // Parse :line suffix from filename. Two forms:
   //   "file.md:100"     -> start at line 100
@@ -1140,7 +1162,7 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
   if (fullPath) {
     const fsPath = resolveVirtualPath(db, canonicalPath);
     if (fsPath && existsSync(fsPath)) {
-      header = fsPath;
+      header = renderFullPath(fsPath);
     } else {
       header = docid ? `${canonicalPath}  #${docid}` : canonicalPath;
     }
@@ -1292,10 +1314,12 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     const docid = docidRow?.hash ? docidRow.hash.slice(0, 6) : undefined;
 
     // --full-path: resolve the on-disk path when it exists (else fall back).
+    // Display as ./-prefixed relative path when under $PWD; absolute realpath
+    // otherwise. See renderFullPath() for the policy.
     let fsPath: string | undefined;
     if (fullPath) {
       const resolved = resolveVirtualPath(db, file.filepath);
-      if (resolved && existsSync(resolved)) fsPath = resolved;
+      if (resolved && existsSync(resolved)) fsPath = renderFullPath(resolved);
     }
 
     // Check size limit
@@ -2253,12 +2277,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
   };
 
   // Helper to pick the visible path for a result. With --full-path we swap
-  // the qmd:// URI for the file's on-disk path: relative to $PWD when the
-  // file lives inside the current working directory, otherwise absolute
-  // (realpath, so symlinks resolve consistently). Falls back to qmd:// if
-  // the file is no longer resolvable on disk.
+  // the qmd:// URI for the file's on-disk path via renderFullPath() (./-
+  // prefixed relative when under $PWD, absolute realpath otherwise). Falls
+  // back to qmd:// if the file is no longer resolvable on disk.
   const linkDbForPaths = opts.fullPath ? getDb() : null;
-  const cwd = process.cwd();
   const displayPathFor = (row: OutputRow): string => {
     // Always rebuild from displayPath so the active index name is included
     // as ?index=… for non-default indexes. row.file may not carry it.
@@ -2266,17 +2288,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     if (!opts.fullPath || !linkDbForPaths) return qmdUri;
     const absolute = resolveVirtualPath(linkDbForPaths, qmdUri);
     if (!absolute || !existsSync(absolute)) return qmdUri;
-    let real: string;
-    try { real = realpathSync(absolute); } catch { real = absolute; }
-    const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
-    if (real === cwdReal) return ".";
-    if (real.startsWith(cwdReal + "/")) {
-      const rel = relativePath(cwdReal, real);
-      // Only show as relative when the file is *under* $PWD. If `relative()`
-      // produced a leading "../" (sibling/parent), fall back to absolute.
-      if (rel && !rel.startsWith("..")) return rel;
-    }
-    return real;
+    return renderFullPath(absolute);
   };
 
   if (opts.format === "json") {
@@ -2839,6 +2851,9 @@ function parseCLI() {
       "min-score": { type: "string" },
       all: { type: "boolean" },
       full: { type: "boolean" },
+      format: { type: "string" },          // preferred: --format cli|json|csv|md|xml|files
+      // Legacy boolean format aliases. Kept working for back-compat but
+      // omitted from the documented help; prefer `--format <kind>`.
       csv: { type: "boolean" },
       md: { type: "boolean" },
       xml: { type: "boolean" },
@@ -2901,9 +2916,21 @@ function parseCLI() {
     }
   }
 
-  // Determine output format
+  // Determine output format. Prefer --format <kind>; fall back to the
+  // legacy boolean aliases (--csv/--md/--xml/--files/--json) which remain
+  // wired up for back-compat but are no longer documented.
   let format: OutputFormat = "cli";
-  if (values.csv) format = "csv";
+  const rawFormat = typeof values.format === "string" ? values.format.toLowerCase().trim() : "";
+  const VALID_FORMATS: ReadonlyArray<OutputFormat> = ["cli", "json", "csv", "md", "xml", "files"];
+  if (rawFormat) {
+    if ((VALID_FORMATS as ReadonlyArray<string>).includes(rawFormat)) {
+      format = rawFormat as OutputFormat;
+    } else {
+      console.error(`Unknown --format value: ${values.format}`);
+      console.error(`Valid: ${VALID_FORMATS.join(", ")}`);
+      process.exit(1);
+    }
+  } else if (values.csv) format = "csv";
   else if (values.md) format = "md";
   else if (values.xml) format = "xml";
   else if (values.files) format = "files";
@@ -3427,7 +3454,7 @@ function showHelp(): void {
   console.log("  QMD_EDITOR_URI             - Editor link template for clickable TTY search output");
   console.log("");
   console.log("Search options:");
-  console.log("  -n <num>                   - Max results (default 5, or 20 for --files/--json)");
+  console.log("  -n <num>                   - Max results (default 5, or 20 for --format files|json)");
   console.log("  --all                      - Return all matches (pair with --min-score)");
   console.log("  --min-score <num>          - Minimum similarity score");
   console.log("  --full                     - Output full document instead of snippet");
@@ -3437,9 +3464,9 @@ function showHelp(): void {
   console.log("  --line-numbers             - Include line numbers (search; get/multi-get are on by default)");
   console.log("  --no-line-numbers          - Disable line numbers for get/multi-get");
   console.log("  --full-path                - Show on-disk paths instead of qmd:// + docid (get/multi-get/search/query)");
-  console.log("                                Paths are relative to $PWD when in a subfolder, absolute otherwise");
-  console.log("  --explain                  - Include retrieval score traces (query --json/CLI)");
-  console.log("  --files | --json | --csv | --md | --xml  - Output format");
+  console.log("                                Paths are ./-prefixed when under $PWD, absolute otherwise");
+  console.log("  --explain                  - Include retrieval score traces (query, CLI/--format json)");
+  console.log("  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files");
   console.log("  -c, --collection <name>    - Filter by one or more collections");
   console.log("");
   console.log("Embed/query options:");
@@ -3448,7 +3475,7 @@ function showHelp(): void {
   console.log("Multi-get options:");
   console.log("  -l <num>                   - Maximum lines per file");
   console.log("  --max-bytes <num>          - Skip files larger than N bytes (default 10240)");
-  console.log("  --json/--csv/--md/--xml/--files - Same formats as search");
+  console.log("  --format <kind>            - Same formats as search");
   console.log("");
   console.log(`Index: ${getDbPath()}`);
 }
@@ -4176,7 +4203,7 @@ if (isMain) {
 
     case "multi-get": {
       if (!cli.args[0]) {
-        console.error("Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--no-line-numbers] [--full-path] [--json|--csv|--md|--xml|--files]");
+        console.error("Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--no-line-numbers] [--full-path] [--format json|csv|md|xml|files]");
         console.error("  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list");
         process.exit(1);
       }

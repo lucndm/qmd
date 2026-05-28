@@ -23,11 +23,17 @@
   view (and the new `**file:**` line in `--md` output) always prints the full
   `qmd://collection/path` URI so you can pipe it straight back into `qmd get`.
 - `qmd search` / `qmd query` accept `--full-path` with the same semantics as
-  `qmd get`: the result label becomes the file's on-disk path — relative to
-  `$PWD` when the file lives in a subfolder of the current directory, absolute
-  realpath otherwise — and the per-result `#docid` is dropped because the path
-  is the identifier. Applies to all output formats (`cli`, `--json`, `--md`,
-  `--csv`, `--xml`, `--files`).
+  `qmd get`: the result label becomes the file's on-disk path — `./`-prefixed
+  relative path when the file lives in a subfolder of `$PWD`, absolute realpath
+  otherwise — and the per-result `#docid` is dropped because the path is the
+  identifier. The leading `./` is intentional so the output is unambiguously a
+  filesystem path. Applies to all output formats.
+- `qmd get` and `qmd multi-get` now also use the `./`-prefixed convention when
+  `--full-path` renders a path under `$PWD`, matching `search`/`query`.
+- New `--format <kind>` flag selects the output format (`cli` | `json` | `csv` |
+  `md` | `xml` | `files`) for `search`, `query`, and `multi-get`. The legacy
+  boolean aliases (`--json`/`--csv`/`--md`/`--xml`/`--files`) still work but are
+  no longer in `--help`; prefer `--format`.
 
 ### Docs
 

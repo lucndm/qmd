@@ -31,7 +31,7 @@ Typical loop:
 ```bash
 qmd search "merchant reality support interviews" -n 5
 # leads: #abc123 concepts/customer-proximity.md; #def432 sources/merchant-call.md
-qmd multi-get "#abc123,#def432" --md
+qmd multi-get "#abc123,#def432" --format md
 ```
 
 **Default to structured `qmd query` with `intent:`, `lex:`, `vec:`, and `hyde:`
@@ -89,7 +89,7 @@ If you genuinely have nothing to expand (a single rare token, a verbatim phrase)
 that is a job for `qmd search`, not bare `qmd query`:
 
 ```bash
-qmd query --json --explain $'intent: ...\nlex: ...\nvec: ...'  # inspect ranking
+qmd query --format json --explain $'intent: ...\nlex: ...\nvec: ...'  # inspect ranking
 ```
 
 If `qmd query` is slow or model/GPU setup fails, fall back to `qmd search` with
@@ -102,8 +102,8 @@ Search results include docids like `#abc123` and `qmd://...` paths. Fetch them:
 ```bash
 qmd get "#abc123"
 qmd get qmd://concepts/ai-before-headcount.md
-qmd multi-get "#abc123,#def432" --md
-qmd multi-get 'concepts/{ai-before-headcount.md,data-informed-not-metric-driven.md}' --md
+qmd multi-get "#abc123,#def432" --format md
+qmd multi-get 'concepts/{ai-before-headcount.md,data-informed-not-metric-driven.md}' --format md
 qmd multi-get 'sources/podcast-2025-*.md' -l 80
 ```
 
@@ -141,11 +141,13 @@ $ qmd get "#abc123" --full-path
 ```
 
 `--full-path` works the same way on `qmd search` and `qmd query`: result paths
-become the file's on-disk path — relative to `$PWD` when the file is inside the
-current directory, absolute otherwise — and the per-result `#docid` is dropped
-because the path is the identifier. Default search/query output still uses
-`qmd://` URIs; only opt into `--full-path` when you specifically need a path you
-can hand to a non-QMD tool.
+become the file's on-disk path — `./`-prefixed relative path when the file is
+inside `$PWD`, absolute realpath otherwise — and the per-result `#docid` is
+dropped because the path is the identifier. The leading `./` is intentional so
+the output is unambiguously a filesystem path and cannot be mistaken for a bare
+collection-relative string. Default search/query output still uses `qmd://`
+URIs; only opt into `--full-path` when you specifically need a path you can hand
+to a non-QMD tool.
 
 ### Read line ranges with the `:from:count` suffix — never pipe through `sed`/`head`/`tail`
 
