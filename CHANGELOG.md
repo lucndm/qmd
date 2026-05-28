@@ -35,6 +35,15 @@
   boolean aliases (`--json`/`--csv`/`--md`/`--xml`/`--files`) still work but are
   no longer in `--help`; prefer `--format`.
 
+### Fixes
+
+- Launcher: source-mode runner selection now prefers Node + tsx over Bun when
+  both `package-lock.json` and `bun.lock` are present in the package root,
+  mirroring the dist-mode "npm priority" rule. Fixes pnpm-global installs that
+  copy the entire working tree (including `.git` and `bun.lock`) into the
+  install dir and previously routed through Bun, causing ABI mismatches with
+  the Node-built `better-sqlite3` / `sqlite-vec` native modules.
+
 ### Docs
 
 - qmd skill: emphasize reading line ranges with `get`'s built-in
