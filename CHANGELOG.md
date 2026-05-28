@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Features
+
+- `qmd get` now accepts a `:from:count` suffix on a path or docid (e.g.
+  `qmd get "#abc123:120:40"` reads 40 lines starting at line 120). Explicit
+  `--from`/`-l` flags still override the suffix. The MCP `get` tool accepts the
+  same suffix.
+- `qmd get` and `qmd multi-get` are now **line-numbered by default** and print
+  the document's `#docid` and `qmd://` path in the output header. Disable line
+  numbers with `--no-line-numbers`. The MCP `get`/`multi_get` tools default
+  `lineNumbers` to `true` to match.
+- `qmd multi-get` now includes the `#docid` in every output format
+  (`--md`, `--json`, `--csv`, `--xml`, `--files`, and the default CLI view),
+  consistent with `qmd search`.
+- `qmd get` and `qmd multi-get` accept `--full-path`, which replaces the
+  `qmd://` path + `#docid` with the document's on-disk filesystem path (handy for
+  piping into `Read`/`Edit`/an editor). Falls back to the canonical `qmd://` +
+  docid header when the file no longer exists on disk.
+
+### Docs
+
+- qmd skill: emphasize reading line ranges with `get`'s built-in
+  `:from:count` suffix / `--from`/`-l` flags instead of piping through
+  `sed`/`head`/`tail`; cite the docid and line numbers now present in retrieval
+  output; and author structured `intent:`/`lex:`/`vec:`/`hyde:` queries yourself
+  rather than relying on built-in query expansion.
+
 ## [2.5.2] - 2026-05-22
 
 ### Fixes
