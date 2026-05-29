@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.5.3] - 2026-05-28
+
 ### Features
 
 - `qmd get` now accepts a `:from:count` suffix on a path or docid (e.g.
