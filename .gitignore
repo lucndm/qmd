@@ -18,3 +18,8 @@ texts/
 finetune/outputs/
 finetune/data/train/
 .claude/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
