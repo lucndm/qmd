@@ -26,11 +26,10 @@ describe("CLI successful-exit lifecycle", () => {
     expect(flushed).toEqual([""]);
   });
 
-  test("flushes stdout then stderr then exits, disposing along the way", async () => {
-    // After widening the safe-exit into a process-wide guard installed by the
-    // LlamaCpp constructor, the per-command 'immediate exit' branch is gone:
-    // every command takes the same flush → dispose → exit(0) path, and the
-    // darwin guard catches the C++ static dtor crash at process-exit time.
+  test("flushes stdout, runs cleanup, flushes stderr, then exits (when exit is provided)", async () => {
+    // The legacy lifecycle order is preserved for callers that pass an
+    // explicit `exit` function — primarily this test, which needs an
+    // observable terminating step.
     const calls: string[] = [];
 
     await finishSuccessfulCliCommand({
@@ -43,6 +42,31 @@ describe("CLI successful-exit lifecycle", () => {
     });
 
     expect(calls).toEqual(["stdout-flush", "cleanup", "stderr-flush", "exit:0"]);
+  });
+
+  test("production path: sets process.exitCode=0 and returns instead of calling process.exit", async () => {
+    // The real CLI does NOT pass `exit` — finishSuccessfulCliCommand should set
+    // process.exitCode and return, letting Node's `beforeExit` fire so
+    // node-llama-cpp's auto-dispose runs BEFORE libc's static destructor.
+    // process.exit() skips `beforeExit`, which is what trips the libggml-metal
+    // assertion (ggml-org/llama.cpp#22593) even with explicit dispose.
+    const prevCode = process.exitCode;
+    process.exitCode = 1; // poison the state to verify we set it
+    try {
+      const calls: string[] = [];
+      await finishSuccessfulCliCommand({
+        command: "query",
+        format: "json",
+        cleanup: async () => { calls.push("cleanup"); },
+        stdout: { write: (_c: string | Uint8Array, cb?: (error?: Error | null) => void) => { calls.push("stdout-flush"); cb?.(); return true; } },
+        stderr: { write: (_c: string | Uint8Array, cb?: (error?: Error | null) => void) => { calls.push("stderr-flush"); cb?.(); return true; } },
+      });
+
+      expect(calls).toEqual(["stdout-flush", "cleanup", "stderr-flush"]);
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = prevCode;
+    }
   });
 
   test("darwin Metal mitigation reflects launcher-exported env on darwin", () => {

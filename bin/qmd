@@ -33,7 +33,7 @@ if (process.argv[2] === "mcp") {
 // libggml-metal on macOS uses "residency sets" to keep allocated model memory
 // resident across inference requests (180-second keep_alive timer). The
 // process-static device destructor that runs during libc exit() asserts the
-// residency set is empty (ggml-org/llama.cpp#17869); the keep_alive hasn't
+// residency set is empty (ggml-org/llama.cpp#22593); the keep_alive hasn't
 // expired by exit, so the assertion fails and ggml_abort dumps a multi-kB
 // stack trace to stderr even when the user-visible results were already
 // emitted correctly. No JS-side dispose can prevent it because the static

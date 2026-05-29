@@ -238,18 +238,29 @@ async function flushWritable(stream: CliLifecycleWritable): Promise<void> {
 /**
  * Finish a successful CLI command after output has been flushed.
  *
- * Best-effort llama disposal (JS-side resources only): if it throws, we still
- * exit 0 because the user's output is already on the wire. The libggml-metal
- * static-destructor crash on darwin (ggml-org/llama.cpp#17869) is prevented
- * by `bin/qmd` exporting `GGML_METAL_NO_RESIDENCY=1` before the native
- * binding loads — see `isDarwinMetalMitigationActive` in `src/llm.ts` for
- * the runtime check exposed to diagnostics. Every code path that touches
- * Metal (query, vsearch, embed, expand) is covered by that single env var,
- * with no per-command bypass logic required here.
+ * We deliberately do NOT call `process.exit(0)`. `process.exit()` skips
+ * Node's `beforeExit` event, and node-llama-cpp registers a `beforeExit` hook
+ * that auto-disposes its native handles. On darwin, without that hook firing,
+ * libggml-metal's static `ggml_metal_device` destructor asserts on a
+ * non-empty residency-set collection during `__cxa_finalize_ranges` and
+ * dumps a multi-kB backtrace (upstream ggml-org/llama.cpp#22593, fix open as
+ * PR #22595). Empirically, even with explicit `disposeDefaultLlamaCpp()` the
+ * direct `process.exit(0)` path still trips the assertion — letting the
+ * event loop drain naturally is what actually clears the rsets.
+ *
+ * So: set `process.exitCode = 0` and return. The main module finishes, the
+ * event loop drains, `beforeExit` fires, native resources tear down in
+ * order, and the process exits cleanly. The `GGML_METAL_NO_RESIDENCY=1` env
+ * var that `bin/qmd` exports is a defense-in-depth safety net for paths
+ * that still call `process.exit()` after loading the native binding
+ * (signal handlers, error paths, `bun test`).
+ *
+ * If the caller passes an explicit `exit` for testability, we honor it —
+ * the lifecycle tests verify the legacy flush → cleanup → exit ordering.
+ * Production callers must not pass `exit`.
  */
 export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCommandOptions): Promise<void> {
   const stderr = options.stderr ?? process.stderr;
-  const exit = options.exit ?? ((code: number) => process.exit(code));
 
   await flushWritable(options.stdout ?? process.stdout);
 
@@ -261,7 +272,13 @@ export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCom
     );
   }
   await flushWritable(stderr);
-  exit(0);
+
+  if (options.exit) {
+    options.exit(0);
+    return;
+  }
+
+  process.exitCode = 0;
 }
 
 // Ensure cursor is restored on exit
@@ -3587,8 +3604,8 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("QMD_EMBED_CONTEXT_SIZE", "overrides embed context size; larger values use more memory");
   add("QMD_EDITOR_URI", "overrides clickable editor link template in terminal output");
   add("QMD_SKILLS_DIR", "overrides where qmd skills are discovered from");
-  add("QMD_METAL_KEEP_RESIDENCY", "opts back into libggml-metal residency sets on darwin; restores ~0ms perf wins for long-lived processes but re-exposes the static-destructor backtrace dump at process exit (ggml-org/llama.cpp#17869)");
-  add("GGML_METAL_NO_RESIDENCY", "set automatically by the launcher on darwin to disable Metal residency sets (avoids ggml-org/llama.cpp#17869); override via QMD_METAL_KEEP_RESIDENCY=1");
+  add("QMD_METAL_KEEP_RESIDENCY", "opts back into libggml-metal residency sets on darwin; restores ~0ms perf wins for long-lived processes but re-exposes the static-destructor backtrace dump at process exit (ggml-org/llama.cpp#22593)");
+  add("GGML_METAL_NO_RESIDENCY", "set automatically by the launcher on darwin to disable Metal residency sets (avoids ggml-org/llama.cpp#22593); override via QMD_METAL_KEEP_RESIDENCY=1");
   add("NO_COLOR", "disables colored terminal output");
   add("CI", "disables real LLM operations inside QMD's LlamaCpp wrapper");
   add("HF_ENDPOINT", "changes Hugging Face download endpoint used when pulling models");
@@ -3871,7 +3888,7 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
 
       // Surface the darwin residency-set mitigation. libggml-metal's
       // process-static device dtor asserts on un-expired residency sets
-      // during libc exit() (ggml-org/llama.cpp#17869), producing a giant
+      // during libc exit() (ggml-org/llama.cpp#22593), producing a giant
       // stderr backtrace after correct output. The bin/qmd launcher exports
       // GGML_METAL_NO_RESIDENCY=1 on darwin to skip the assertion entirely.
       // No measurable perf cost on short-lived CLI calls.
@@ -3880,13 +3897,13 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
           doctorCheck(
             "darwin metal residency",
             true,
-            "GGML_METAL_NO_RESIDENCY=1 set by launcher; clean process exit (avoids ggml-org/llama.cpp#17869). Opt back in with QMD_METAL_KEEP_RESIDENCY=1 if you run long-lived qmd processes."
+            "GGML_METAL_NO_RESIDENCY=1 set by launcher; clean process exit (avoids ggml-org/llama.cpp#22593). Opt back in with QMD_METAL_KEEP_RESIDENCY=1 if you run long-lived qmd processes."
           );
         } else {
           doctorCheck(
             "darwin metal residency",
             false,
-            "residency sets active (QMD_METAL_KEEP_RESIDENCY=1 or launcher bypassed); llama-using commands may dump a libggml-metal backtrace at exit (ggml-org/llama.cpp#17869) even when output succeeded."
+            "residency sets active (QMD_METAL_KEEP_RESIDENCY=1 or launcher bypassed); llama-using commands may dump a libggml-metal backtrace at exit (ggml-org/llama.cpp#22593) even when output succeeded."
           );
           nextSteps.push("Unset `QMD_METAL_KEEP_RESIDENCY` so the launcher can disable Metal residency sets; without this, query/vsearch/embed dump a stack trace at exit even on success.");
         }

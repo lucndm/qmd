@@ -722,7 +722,7 @@ export class LlamaCpp implements LLM {
   constructor(config: LlamaCppConfig = {}) {
     // STRUCTURAL INVARIANT: the launcher (bin/qmd) sets GGML_METAL_NO_RESIDENCY=1
     // on darwin BEFORE the native binding loads, which prevents the libggml-metal
-    // static destructor assertion at process exit (ggml-org/llama.cpp#17869).
+    // static destructor assertion at process exit (ggml-org/llama.cpp#22593).
     // See isDarwinMetalMitigationActive() for the runtime check exposed to
     // diagnostics. No constructor-time guard installation is needed.
 
@@ -1960,7 +1960,7 @@ export function canUnloadLLM(): boolean {
 // destructor fires during libc `exit()` → `__cxa_finalize_ranges` and asserts
 // `[rsets->data count] == 0` — but the keep_alive hasn't expired, so the
 // assertion fails and `ggml_abort` dumps a multi-kilobyte stack trace to
-// stderr after the user-visible output. See ggml-org/llama.cpp#17869.
+// stderr after the user-visible output. See ggml-org/llama.cpp#22593.
 //
 // No JS-side dispose call (`llama.dispose()`, `model.dispose()`, etc.) can
 // prevent it: the static destructor runs after every JS-reachable cleanup,

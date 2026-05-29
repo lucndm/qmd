@@ -43,21 +43,31 @@
   copy the entire working tree (including `.git` and `bun.lock`) into the
   install dir and previously routed through Bun, causing ABI mismatches with
   the Node-built `better-sqlite3` / `sqlite-vec` native modules.
-- Darwin Metal: launcher (`bin/qmd`) and `bun test` preload now set
-  `GGML_METAL_NO_RESIDENCY=1` by default on macOS to disable libggml-metal's
-  residency-set keep-alive timer. Previously, llama-using commands (`query`,
-  `vsearch`, `embed`) and the test runner dumped a multi-kB GGML/Metal
-  backtrace at process exit even when output succeeded
-  (ggml-org/llama.cpp#17869) — the static `ggml_metal_device` destructor
-  asserts `[rsets->data count] == 0` during `__cxa_finalize_ranges`, but the
-  residency set's 180 s keep-alive timer hasn't expired yet. Residency sets
-  give no measurable speedup for QMD's short-lived CLI workflow (benchmarked
-  on M3 Pro), so disabling them is a pure win. The Bun preload uses
-  `bun:ffi` to call libc `setenv()` directly because Bun does not propagate
-  `process.env` mutations through to native `getenv()` (Node does). Opt back
-  in with `QMD_METAL_KEEP_RESIDENCY=1` for long-lived qmd processes (e.g. the
-  MCP daemon may benefit on hot reload) or to triage the upstream fix.
-  `qmd doctor` now reports the mitigation state.
+- Darwin Metal: llama-using commands (`query`, `vsearch`, `embed`) no longer
+  dump a multi-kB GGML/Metal backtrace at process exit even when output
+  succeeded. The libggml-metal static `ggml_metal_device` destructor asserts
+  `[rsets->data count] == 0` during `__cxa_finalize_ranges`, but the
+  buffer-free path never calls the symmetric `ggml_metal_device_rsets_rm`
+  to remove released rsets from the device collection (upstream
+  ggml-org/llama.cpp#22593, one-line fix open as PR #22595). The assertion
+  only fires when `process.exit()` skips Node's `beforeExit` hook, which is
+  what node-llama-cpp uses to auto-dispose Metal contexts. Primary fix:
+  `finishSuccessfulCliCommand` now sets `process.exitCode = 0` and returns
+  instead of calling `process.exit(0)`, so `beforeExit` fires and the native
+  binding cleans up before libc's static destructor runs. Defense-in-depth:
+  the launcher (`bin/qmd`) and the npm test driver (`scripts/test-all.mjs`
+  + the `test:bun` / `test:unit` package.json scripts) also set
+  `GGML_METAL_NO_RESIDENCY=1` on darwin before spawning node/bun, covering
+  error paths and tests that still terminate via `process.exit()`. The env
+  var must be set before node/bun start — libggml-metal reads it via libc
+  `getenv` at module-load time, and Bun does not propagate `process.env`
+  mutations to libc `setenv` — so it lives in the launcher rather than in
+  test-preload. Residency sets give no measurable speedup for QMD's
+  short-lived CLI workflow (benchmarked on M3 Pro). Opt back in with
+  `QMD_METAL_KEEP_RESIDENCY=1` for long-lived qmd processes (e.g. the MCP
+  daemon may benefit on hot reload) or to triage the upstream fix.
+  `qmd doctor` reports the mitigation state. Minimal reproduction:
+  `scripts/repro-metal-rsets-crash.mjs`.
 
 ### Docs
 
