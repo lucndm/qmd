@@ -33,7 +33,7 @@ export class OpenAILLM implements LLM {
   constructor(config: OpenAILLMConfig) {
     this.config = config;
     this._embedModelName = config.embedModel || "qwen3-embedding-small";
-    this._generateModelName = config.generateModel || "MiniMax-M2.7-highspeed";
+    this._generateModelName = config.generateModel || "MiniMax-M2.7";
     this._rerankModelName = config.rerankModel || "qwen3-reranker-small";
   }
 
@@ -46,74 +46,59 @@ export class OpenAILLM implements LLM {
   async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
     const model = options?.model ?? this._embedModelName;
     const input = stripEmbeddingFormat(text);
-    try {
-      const res = await this.fetch("/v1/embeddings", {
-        model,
-        input,
-        encoding_format: "float",
-      });
-      if (!res.ok) {
-        console.error(`embed API error: ${res.status} ${await res.text()}`);
-        return null;
-      }
-      const data = await res.json() as { data: Array<{ embedding: number[] }> };
-      return { embedding: data.data[0]!.embedding, model };
-    } catch (e) {
-      console.error("embed error:", e);
-      return null;
+    const res = await this.fetch("/v1/embeddings", {
+      model,
+      input,
+      encoding_format: "float",
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`embed API error: ${res.status} ${body}`);
     }
+    const data = await res.json() as { data: Array<{ embedding: number[] }> };
+    return { embedding: data.data[0]!.embedding, model };
   }
 
   async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
     const model = options?.model ?? this._embedModelName;
     const input = texts.map(stripEmbeddingFormat);
-    try {
-      const res = await this.fetch("/v1/embeddings", {
-        model,
-        input,
-        encoding_format: "float",
-      });
-      if (!res.ok) {
-        console.error(`embedBatch API error: ${res.status} ${await res.text()}`);
-        return texts.map(() => null);
-      }
-      const data = await res.json() as { data: Array<{ embedding: number[] }> };
-      return data.data.map((item) => ({ embedding: item.embedding, model }));
-    } catch (e) {
-      console.error("embedBatch error:", e);
-      return texts.map(() => null);
+    const res = await this.fetch("/v1/embeddings", {
+      model,
+      input,
+      encoding_format: "float",
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`embedBatch API error: ${res.status} ${body}`);
     }
+    const data = await res.json() as { data: Array<{ embedding: number[] }> };
+    return data.data.map((item) => ({ embedding: item.embedding, model }));
   }
 
   // -- Generation ----------------------------------------------------------------
 
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null> {
     const model = options?.model ?? this._generateModelName;
-    try {
-      const res = await this.fetch("/v1/chat/completions", {
-        model,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: options?.maxTokens ?? 600,
-        temperature: options?.temperature ?? 0.7,
-        top_p: 0.8,
-      });
-      if (!res.ok) {
-        console.error(`generate API error: ${res.status} ${await res.text()}`);
-        return null;
-      }
-      const data = await res.json() as {
-        choices: Array<{ message: { content: string } }>;
-        model: string;
-      };
-      return {
-        text: data.choices[0]!.message.content,
-        model: data.model,
-        done: true,
-      };
-    } catch (e) {
-      console.error("generate error:", e);
-      return null;
+    const res = await this.fetch("/v1/chat/completions", {
+      model,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: options?.maxTokens ?? 600,
+      temperature: options?.temperature ?? 0.7,
+      top_p: 0.8,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`generate API error: ${res.status} ${body}`);
     }
+    const data = await res.json() as {
+      choices: Array<{ message: { content: string } }>;
+      model: string;
+    };
+    return {
+      text: data.choices[0]!.message.content,
+      model: data.model,
+      done: true,
+    };
   }
 
   // -- Query Expansion -----------------------------------------------------------
@@ -177,36 +162,25 @@ export class OpenAILLM implements LLM {
     options?: RerankOptions,
   ): Promise<RerankResult> {
     const model = options?.model ?? this._rerankModelName;
-    try {
-      const res = await this.fetch("/rerank", {
-        model,
-        query,
-        documents: documents.map(d => d.text),
-        top_n: documents.length,
-      });
-      if (!res.ok) {
-        console.error(`rerank API error: ${res.status} ${await res.text()}`);
-        return {
-          results: documents.map((d, i) => ({ file: d.file, score: 0, index: i })),
-          model,
-        };
-      }
-      const data = await res.json() as {
-        results: Array<{ index: number; relevance_score: number }>;
-        model: string;
-      };
-      const results = data.results.map((r) => {
-        const doc = documents[r.index]!;
-        return { file: doc.file, score: r.relevance_score, index: r.index };
-      });
-      return { results, model: data.model ?? model };
-    } catch (e) {
-      console.error("rerank error:", e);
-      return {
-        results: documents.map((d, i) => ({ file: d.file, score: 0, index: i })),
-        model,
-      };
+    const res = await this.fetch("/rerank", {
+      model,
+      query,
+      documents: documents.map(d => d.text),
+      top_n: documents.length,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`rerank API error: ${res.status} ${body}`);
     }
+    const data = await res.json() as {
+      results: Array<{ index: number; relevance_score: number }>;
+      model: string;
+    };
+    const results = data.results.map((r) => {
+      const doc = documents[r.index]!;
+      return { file: doc.file, score: r.relevance_score, index: r.index };
+    });
+    return { results, model: data.model ?? model };
   }
 
   // -- Model Info ----------------------------------------------------------------
