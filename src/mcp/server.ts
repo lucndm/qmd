@@ -731,7 +731,7 @@ export async function startMcpHttpServer(
           const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.intent === "string" ? params.intent : undefined);
           return {
             docid: `#${r.docid}`,
-            file: r.displayPath,
+            file: `qmd://${encodeQmdPath(r.displayPath)}`,
             title: r.title,
             score: Math.round(r.score * 100) / 100,
             context: r.context,

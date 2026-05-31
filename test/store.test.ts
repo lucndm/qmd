@@ -1604,6 +1604,39 @@ describe("FTS Search", () => {
 
     await cleanupTestDb(store);
   });
+
+  test("searchFTS matches dotted version strings like 2026.4.10 (#563)", async () => {
+    // Regression test: porter unicode61 tokenizer splits on dots, so the index
+    // stores "2026", "4", "10" as separate tokens. Before the fix, sanitizeFTS5Term
+    // stripped the dots producing "2026410" which never matched anything.
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+
+    await insertTestDocument(store.db, collectionName, {
+      name: "release-notes",
+      title: "Release Notes",
+      body: "## Release 2026.4.10\n\nThis version introduces new features and bug fixes.",
+      displayPath: "test/release-notes.md",
+    });
+
+    // A document that does NOT contain the version string
+    await insertTestDocument(store.db, collectionName, {
+      name: "other-doc",
+      title: "Other Document",
+      body: "Unrelated content about gardening and cooking.",
+      displayPath: "test/other.md",
+    });
+
+    const results = store.searchFTS("2026.4.10", 10);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.map(r => r.displayPath)).toContain(`${collectionName}/test/release-notes.md`);
+
+    // Partial version should also work
+    const partial = store.searchFTS("2026.4", 10);
+    expect(partial.map(r => r.displayPath)).toContain(`${collectionName}/test/release-notes.md`);
+
+    await cleanupTestDb(store);
+  });
 });
 
 // =============================================================================

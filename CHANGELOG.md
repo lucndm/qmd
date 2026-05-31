@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- FTS5 search now correctly matches dotted version strings like `2026.4.10`. The
+  `porter unicode61` tokenizer splits on dots (storing `2026`, `4`, `10` as
+  separate tokens), but the query sanitizer was stripping dots and producing
+  `2026410` which never matched. Dotted terms are now split and ANDed together
+  so version-string searches work as expected (#563).
+- HTTP REST endpoints `/query` and `/search` now return `qmd://collection/path`
+  URIs in the `file` field, matching the output format used by the CLI and MCP
+  resource URIs. Previously the raw `displayPath` (`collection/path`) was
+  returned without the scheme prefix (#576).
+- The embed session `maxDuration` is now env-configurable via
+  `QMD_EMBED_MAX_DURATION_MS` (default: 30 min). This prevents large-corpus
+  embeddings from being aborted by the hardcoded 30-minute ceiling (#673).
+
 ## [2.5.3] - 2026-05-28
 
 ### Features
