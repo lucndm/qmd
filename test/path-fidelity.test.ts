@@ -20,7 +20,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawn } from "child_process";
@@ -131,6 +131,11 @@ async function createCrazyCollection(prefix: string): Promise<{
   await mkdir(join(collectionDir, "subdir"), { recursive: true });
   await mkdir(configDir, { recursive: true });
 
+  // Resolve symlinks so the path matches what getRealPath() stores in the DB.
+  // On macOS /tmp is a symlink to /private/tmp; without this normalisation
+  // toVirtualPath() and --full-path resolution fail.
+  const realCollectionDir = realpathSync(collectionDir);
+
   for (const f of crazyFiles) {
     await writeFile(join(collectionDir, f.name), f.content);
   }
@@ -141,7 +146,7 @@ async function createCrazyCollection(prefix: string): Promise<{
   // Write empty YAML config — `collection add` will populate it
   await writeFile(join(configDir, "index.yml"), "collections: {}\n");
 
-  return { collectionDir, dbPath, configDir };
+  return { collectionDir: realCollectionDir, dbPath, configDir };
 }
 
 // ---------------------------------------------------------------------------
