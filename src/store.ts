@@ -1306,7 +1306,10 @@ export async function reindexCollection(
 
   for (const relativeFile of files) {
     const filepath = getRealPath(resolve(collectionPath, relativeFile));
-    const path = handelize(relativeFile);
+    // Store the literal relative path so the filesystem path can always be
+    // reconstructed as: resolve(collection.path, storedPath).
+    // handelize() is NOT applied at index time — it is display-only.
+    const path = normalizePathSeparators(relativeFile);
     seenPaths.add(path);
 
     let content: string;
@@ -2493,12 +2496,34 @@ export function findOrMigrateLegacyDocument(
   const existing = findActiveDocument(db, collectionName, path);
   if (existing) return existing;
 
-  const legacy = db.prepare(`
+  // Case-insensitive match (legacy normalization: e.g. "README.md" → "readme.md").
+  const legacyCase = db.prepare(`
     SELECT id, hash, title FROM documents
     WHERE collection = ? AND path COLLATE NOCASE = ? AND active = 1
     ORDER BY id
     LIMIT 1
   `).get(collectionName, path) as { id: number; hash: string; title: string } | undefined;
+
+  // Handalized-path match: existing DBs indexed with handelize() stored slugged paths
+  // like "Budget-Revenue-Q4-2024.md" for a raw path like "Budget & Revenue (Q4) [2024].md".
+  // Try matching the handalized form of the incoming raw path against the DB so that
+  // qmd update on an old index can rename the row to the literal path.
+  let legacyHandalized: { id: number; hash: string; title: string } | undefined;
+  try {
+    const handleized = handelize(path);
+    if (handleized !== path) {
+      legacyHandalized = db.prepare(`
+        SELECT id, hash, title FROM documents
+        WHERE collection = ? AND path = ? AND active = 1
+        ORDER BY id
+        LIMIT 1
+      `).get(collectionName, handleized) as { id: number; hash: string; title: string } | undefined;
+    }
+  } catch {
+    // handelize throws on invalid paths; just skip
+  }
+
+  const legacy = legacyCase ?? legacyHandalized;
   if (!legacy) return null;
 
   // Wrap rename + FTS rebuild in a transaction for atomicity.

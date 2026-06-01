@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- Filesystem paths with special characters (`#`, `&`, spaces, `[]`, `()`, etc.)
+  now round-trip correctly through index → search → get. Previously
+  `reindexCollection` called `handelize()` on relative paths before storing
+  them, turning `# Meeting - 234232 3432 __ 5.md` into
+  `Meeting-234232-3432-5.md` and making `qmd get <actual-path>`,
+  `qmd get --full-path`, and `qmd ls` return dead or garbled paths. Paths are
+  now stored verbatim. Existing indexes auto-migrate on the next `qmd update`.
+
 - FTS5 search now correctly matches dotted version strings like `2026.4.10`. The
   `porter unicode61` tokenizer splits on dots (storing `2026`, `4`, `10` as
   separate tokens), but the query sanitizer was stripping dots and producing
