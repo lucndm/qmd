@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Filesystem paths with special characters (`#`, `&`, spaces, `[]`, `()`, etc.)
+  now round-trip correctly through index → search → get. Previously
+  `reindexCollection` called `handelize()` on relative paths before storing
+  them, turning `# Meeting - 234232 3432 __ 5.md` into
+  `Meeting-234232-3432-5.md` and making `qmd get <actual-path>`,
+  `qmd get --full-path`, and `qmd ls` return dead or garbled paths. Paths are
+  now stored verbatim. Existing indexes auto-migrate on the next `qmd update`.
+
+- FTS5 search now correctly matches dotted version strings like `2026.4.10`. The
+  `porter unicode61` tokenizer splits on dots (storing `2026`, `4`, `10` as
+  separate tokens), but the query sanitizer was stripping dots and producing
+  `2026410` which never matched. Dotted terms are now split and ANDed together
+  so version-string searches work as expected (#563).
+- HTTP REST endpoints `/query` and `/search` now return `qmd://collection/path`
+  URIs in the `file` field, matching the output format used by the CLI and MCP
+  resource URIs. Previously the raw `displayPath` (`collection/path`) was
+  returned without the scheme prefix (#576).
+- The embed session `maxDuration` is now env-configurable via
+  `QMD_EMBED_MAX_DURATION_MS` (default: 30 min). This prevents large-corpus
+  embeddings from being aborted by the hardcoded 30-minute ceiling (#673).
+
 ## [2.5.3] - 2026-05-28
 
 ### Features

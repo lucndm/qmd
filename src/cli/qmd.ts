@@ -1824,7 +1824,8 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   for (const relativeFile of files) {
     const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
-    const path = handelize(relativeFile); // Normalize path for token-friendliness
+    // Store the literal relative path — handelize() is NOT applied at index time.
+    const path = relativeFile.replace(/\\/g, '/');
     seenPaths.add(path);
 
     let content: string;
