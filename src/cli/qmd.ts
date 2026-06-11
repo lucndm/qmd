@@ -82,6 +82,10 @@ import {
   type ChunkStrategy,
 } from "../store.js";
 import { getInboxDir } from "../paths.js";
+import { loadCloudConfig, saveCloudConfig, getCloudConfigPath, resolveRemoteName, type CloudConfig } from "../cloud/config.js";
+import { validateConnection, createCloudClient } from "../cloud/client.js";
+import { pushToRemote } from "../cloud/push.js";
+import { pullFromRemote } from "../cloud/pull.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { OpenAILLM, type OpenAILLMConfig } from "../llm-openai.js";
 import {
@@ -132,7 +136,7 @@ function resolveCliLLM(): LlamaCpp | OpenAILLM {
   const backend = process.env.QMD_LLM_BACKEND || "api";
   if (backend === "api") {
     const config: OpenAILLMConfig = {
-      baseUrl: process.env.QMD_API_BASE_URL || "http://litellm:4000",
+      baseUrl: process.env.QMD_API_BASE_URL || "http://100.68.251.84:4001/",
       apiKey: process.env.QMD_API_KEY,
       embedModel: process.env.QMD_EMBED_MODEL,
       generateModel: process.env.QMD_GENERATE_MODEL,
@@ -230,6 +234,7 @@ const c = {
   cyan: useColor ? "\x1b[36m" : "",
   yellow: useColor ? "\x1b[33m" : "",
   green: useColor ? "\x1b[32m" : "",
+  red: useColor ? "\x1b[31m" : "",
   magenta: useColor ? "\x1b[35m" : "",
   blue: useColor ? "\x1b[34m" : "",
 };
@@ -1963,6 +1968,14 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
 }
 
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
+  const backend = process.env.QMD_LLM_BACKEND || "api";
+  if (backend === "api") {
+    return {
+      embed: process.env.QMD_EMBED_MODEL || "qwen3-embedding-small",
+      generate: process.env.QMD_GENERATE_MODEL || "MiniMax-M2.7",
+      rerank: process.env.QMD_RERANK_MODEL || "qwen3-reranker-small",
+    };
+  }
   try {
     const config = loadConfig();
     const models = resolveModels(config.models);
@@ -2909,6 +2922,8 @@ function parseCLI() {
       http: { type: "boolean" },
       daemon: { type: "boolean" },
       port: { type: "string" },
+      // Cloud options
+      token: { type: "string" },
     },
     allowPositionals: true,
     strict: false, // Allow unknown options to pass through
@@ -4607,6 +4622,160 @@ if (isMain) {
         dbPath: getDbPath(),
         configPath: configExists() ? getConfigPath() : undefined,
       });
+      break;
+    }
+
+    case "cloud": {
+      const cloudSub = cli.args[0];
+      switch (cloudSub) {
+        case "login": {
+          const url = cli.args[1];
+          const token = cli.values.token as string | undefined;
+          const name = (cli.values.name as string) || "default";
+          if (!url || !token) {
+            console.error("Usage: qmd cloud login <url> --token <token> [--name <name>]");
+            console.error("");
+            console.error("  Connect to a Turso database.");
+            console.error("  URL format: libsql://<db-name>-<org>.turso.io");
+            process.exit(1);
+          }
+          const remote = { url, token };
+          console.log(`Validating connection to ${url}...`);
+          const validation = await validateConnection(remote);
+          if (!validation.ok) {
+            console.error(`Connection failed: ${validation.error}`);
+            process.exit(1);
+          }
+          const config: CloudConfig = loadCloudConfig() ?? { default_remote: name, remotes: {} };
+          config.remotes[name] = remote;
+          if (Object.keys(config.remotes).length === 1) {
+            config.default_remote = name;
+          }
+          saveCloudConfig(config);
+          console.log(`${c.green}Connected${c.reset} to ${url}`);
+          console.log(`${c.green}Config saved${c.reset} to ${getCloudConfigPath()}`);
+          if (validation.serverInfo) {
+            console.log(`Server: ${validation.serverInfo}`);
+          }
+          break;
+        }
+
+        case "logout": {
+          const logoutName = (cli.values.name as string) || "default";
+          const logoutConfig = loadCloudConfig();
+          if (!logoutConfig || !logoutConfig.remotes[logoutName]) {
+            console.error(`Remote '${logoutName}' not found in config.`);
+            process.exit(1);
+          }
+          delete logoutConfig.remotes[logoutName];
+          if (logoutConfig.default_remote === logoutName) {
+            const remaining = Object.keys(logoutConfig.remotes);
+            logoutConfig.default_remote = remaining[0] ?? "default";
+          }
+          saveCloudConfig(logoutConfig);
+          console.log(`Removed remote '${logoutName}'`);
+          break;
+        }
+
+        case "status": {
+          const statusConfig = loadCloudConfig();
+          if (!statusConfig || Object.keys(statusConfig.remotes).length === 0) {
+            console.log("No cloud remotes configured.");
+            console.log("Run 'qmd cloud login <url> --token <token>' to get started.");
+            break;
+          }
+          for (const [rname, remote] of Object.entries(statusConfig.remotes)) {
+            const isDefault = rname === statusConfig.default_remote;
+            const marker = isDefault ? `${c.green}*${c.reset}` : " ";
+            console.log(`${marker} ${c.bold}${rname}${c.reset}: ${remote.url}`);
+            const v = await validateConnection(remote);
+            if (v.ok) {
+              console.log(`  Status: ${c.green}connected${c.reset}${v.serverInfo ? ` (${v.serverInfo})` : ""}`);
+            } else {
+              console.log(`  Status: ${c.red}error${c.reset} — ${v.error}`);
+            }
+          }
+          break;
+        }
+
+        case "push": {
+          const pushConfig = loadCloudConfig();
+          if (!pushConfig || Object.keys(pushConfig.remotes).length === 0) {
+            console.error("No cloud remote configured. Run 'qmd cloud login' first.");
+            process.exit(1);
+          }
+          const pushRemoteName = resolveRemoteName(cli.values.name as string | undefined);
+          const pushRemote = pushConfig.remotes[pushRemoteName];
+          if (!pushRemote) {
+            console.error(`Remote '${pushRemoteName}' not found. Run 'qmd cloud login' first.`);
+            process.exit(1);
+          }
+          try {
+            const pushClient = await createCloudClient(pushRemote);
+            const pushStore = getStore();
+            console.log(`Pushing to ${pushRemoteName} (${pushRemote.url})...`);
+            const pushResult = await pushToRemote(pushStore.db, pushClient);
+            pushClient.close();
+            for (const [tname, info] of Object.entries(pushResult.tables)) {
+              console.log(`  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`);
+            }
+            const pushSec = (pushResult.durationMs / 1000).toFixed(1);
+            console.log(`${c.green}Push complete${c.reset} (${pushSec}s)`);
+          } catch (err) {
+            console.error(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+          }
+          break;
+        }
+
+        case "pull": {
+          const pullConfig = loadCloudConfig();
+          if (!pullConfig || Object.keys(pullConfig.remotes).length === 0) {
+            console.error("No cloud remote configured. Run 'qmd cloud login' first.");
+            process.exit(1);
+          }
+          const pullRemoteName = resolveRemoteName(cli.values.name as string | undefined);
+          const pullRemote = pullConfig.remotes[pullRemoteName];
+          if (!pullRemote) {
+            console.error(`Remote '${pullRemoteName}' not found. Run 'qmd cloud login' first.`);
+            process.exit(1);
+          }
+          try {
+            const pullClient = await createCloudClient(pullRemote);
+            const pullDbPath = getDbPath();
+            const pullForce = !!cli.values.force;
+            console.log(`Pulling from ${pullRemoteName} (${pullRemote.url})...`);
+            const pullResult = await pullFromRemote(pullClient, pullDbPath, { force: pullForce });
+            pullClient.close();
+            if (!pullResult.swapped) {
+              console.log(`${c.green}Already up to date.${c.reset}`);
+            } else {
+              for (const [tname, info] of Object.entries(pullResult.tables)) {
+                console.log(`  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`);
+              }
+              const pullSec = (pullResult.durationMs / 1000).toFixed(1);
+              console.log(`${c.green}Pull complete${c.reset} (${pullSec}s)`);
+              closeDb();
+            }
+          } catch (err) {
+            console.error(`Pull failed: ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+          }
+          break;
+        }
+
+        default: {
+          console.error("Usage: qmd cloud <login|logout|status|push|pull>");
+          console.error("");
+          console.error("Commands:");
+          console.error("  login <url> --token <token>  Connect to Turso remote");
+          console.error("  logout [--name <name>]       Remove a remote");
+          console.error("  status                       Show cloud config and connectivity");
+          console.error("  push [--name <name>]         Push local index to remote");
+          console.error("  pull [--name <name>] [--force] Pull remote index to local");
+          process.exit(1);
+        }
+      }
       break;
     }
 
