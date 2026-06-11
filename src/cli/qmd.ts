@@ -86,7 +86,7 @@ import { loadCloudConfig, saveCloudConfig, getCloudConfigPath, resolveRemoteName
 import { validateConnection, createCloudClient } from "../cloud/client.js";
 import { pushToRemote } from "../cloud/push.js";
 import { pullFromRemote } from "../cloud/pull.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, withLLMSessionForLlm, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { OpenAILLM, type OpenAILLMConfig } from "../llm-openai.js";
 import {
   formatSearchResults,
@@ -3793,7 +3793,8 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
   const threshold = 0.0001;
   const mismatches: string[] = [];
 
-  await withLLMSession(async (session) => {
+  const doctorLlm = getStore().llm ?? getDefaultLlamaCpp();
+  await withLLMSessionForLlm(doctorLlm, async (session) => {
     for (const sample of samples) {
       const hashSeq = `${sample.hash}_${sample.seq}`;
       const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);

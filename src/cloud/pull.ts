@@ -1,5 +1,6 @@
 import type { Database } from "../db.js";
 import { openDatabase, loadSqliteVec } from "../db.js";
+import { DEFAULT_EMBEDDING_DIM } from "../store.js";
 import type { CloudClient } from "./client.js";
 import { copyFileSync, existsSync, unlinkSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -178,7 +179,7 @@ async function createLocalSchema(db: Database, tables: RemoteTable[]): Promise<v
   for (const table of tables) {
     if (table.type === "virtual_vec") {
       const dimMatch = table.ddl.match(/FLOAT32\((\d+)\)/i);
-      const dimensions = dimMatch?.[1] ? parseInt(dimMatch[1], 10) : 1024;
+      const dimensions = dimMatch?.[1] ? parseInt(dimMatch[1], 10) : DEFAULT_EMBEDDING_DIM;
       try {
         db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${table.name} USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
       } catch {

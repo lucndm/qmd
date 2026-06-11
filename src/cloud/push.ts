@@ -1,4 +1,5 @@
 import type { Database } from "../db.js";
+import { DEFAULT_EMBEDDING_DIM } from "../store.js";
 import type { CloudClient } from "./client.js";
 
 interface TableInfo {
@@ -135,7 +136,7 @@ export function ensureIfNotExists(ddl: string): string {
 
 async function createVecTableRemote(client: CloudClient, table: TableInfo): Promise<void> {
   const dimMatch = table.ddl.match(/float\[(\d+)\]/);
-  const dimensions = dimMatch?.[1] ? parseInt(dimMatch[1], 10) : 1024;
+  const dimensions = dimMatch?.[1] ? parseInt(dimMatch[1], 10) : DEFAULT_EMBEDDING_DIM;
 
   await client.execute(
     `CREATE TABLE IF NOT EXISTS ${table.name} (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(${dimensions}))`
