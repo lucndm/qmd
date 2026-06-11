@@ -84,8 +84,12 @@ function getLocalSchema(db: Database): TableInfo[] {
 }
 
 function getColumns(db: Database, tableName: string): string[] {
-  const rows = db.prepare(`PRAGMA table_info("${tableName}")`).all() as { name: string }[];
-  return rows.map(r => r.name);
+  try {
+    const rows = db.prepare(`PRAGMA table_info("${tableName}")`).all() as { name: string }[];
+    return rows.map(r => r.name);
+  } catch {
+    return [];
+  }
 }
 
 async function createRemoteSchema(client: CloudClient, tables: TableInfo[]): Promise<void> {
