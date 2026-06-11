@@ -81,6 +81,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
+import { getInboxDir } from "../paths.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { OpenAILLM, type OpenAILLMConfig } from "../llm-openai.js";
 import {
@@ -128,7 +129,7 @@ let storeDbPathOverride: string | undefined;
 let currentIndexName = "index";
 
 function resolveCliLLM(): LlamaCpp | OpenAILLM {
-  const backend = process.env.QMD_LLM_BACKEND || "local";
+  const backend = process.env.QMD_LLM_BACKEND || "api";
   if (backend === "api") {
     const config: OpenAILLMConfig = {
       baseUrl: process.env.QMD_API_BASE_URL || "http://litellm:4000",
@@ -4401,6 +4402,97 @@ if (isMain) {
           console.error("Run 'qmd collection help' for usage");
           printDoctorHint();
           process.exit(1);
+      }
+      break;
+    }
+
+    case "inbox": {
+      const subcommand = cli.args[0];
+      switch (subcommand) {
+        case "list":
+        case "ls": {
+          const { readdirSync } = await import("node:fs");
+          const { resolve: resolvePath } = await import("node:path");
+          const inboxDir = getInboxDir();
+          try {
+            const files = readdirSync(inboxDir).filter((f: string) => f.endsWith('.md') || f.endsWith('.txt'));
+            if (files.length === 0) {
+              console.log("Inbox is empty.");
+              break;
+            }
+            console.log(`Inbox (${files.length} file${files.length === 1 ? '' : 's'}):`);
+            for (const f of files) {
+              const fp = resolvePath(inboxDir, f);
+              const s = statSync(fp);
+              const age = Math.floor((Date.now() - s.mtimeMs) / 86400000);
+              const size = s.size < 1024 ? `${s.size}B` : `${Math.round(s.size / 1024)}KB`;
+              console.log(`  ${f}  ${size}  ${age}d ago`);
+            }
+          } catch {
+            console.log("Inbox is empty.");
+          }
+          break;
+        }
+
+        case "move":
+        case "mv": {
+          const file = cli.args[1];
+          const collection = cli.args[2];
+          const targetPath = cli.values.path as string | undefined;
+          if (!file || !collection) {
+            console.error("Usage: qmd inbox move <file> <collection> [--path <subpath>]");
+            console.error("");
+            console.error("  Move a file from inbox to a target collection.");
+            console.error("  Use 'qmd inbox list' to see files, 'qmd collection list' for collections.");
+            process.exit(1);
+          }
+          try {
+            const s = await getStore();
+            const result = await s.moveInboxFile(file, collection, targetPath);
+            console.log(`Moved ${result.file} to ${result.to}`);
+          } catch (err) {
+            exitWithError(err);
+          }
+          break;
+        }
+
+        case "clean": {
+          const { readdirSync: readdir, unlinkSync } = await import("node:fs");
+          const { resolve: resolvePath2 } = await import("node:path");
+          const days = parseInt(cli.values.days as string || "30", 10);
+          const inboxDir = getInboxDir();
+          let removed = 0;
+          try {
+            const files = readdir(inboxDir).filter((f: string) => f.endsWith('.md') || f.endsWith('.txt'));
+            const cutoff = Date.now() - days * 86400000;
+            for (const f of files) {
+              const fp = resolvePath2(inboxDir, f);
+              const s = statSync(fp);
+              if (s.mtimeMs < cutoff) {
+                unlinkSync(fp);
+                removed++;
+              }
+            }
+          } catch { /* inbox dir may not exist yet */ }
+          console.log(`Cleaned ${removed} file${removed === 1 ? '' : 's'} older than ${days} days from inbox.`);
+          if (removed > 0) {
+            try {
+              const s = await getStore();
+              await s.update({ collections: ["inbox"] });
+            } catch { /* non-fatal */ }
+          }
+          break;
+        }
+
+        default: {
+          console.error("Usage: qmd inbox <list|move|clean>");
+          console.error("");
+          console.error("Commands:");
+          console.error("  list                  List files in inbox");
+          console.error("  move <file> <coll>    Move file from inbox to collection");
+          console.error("  clean [--days N]      Remove files older than N days (default: 30)");
+          process.exit(1);
+        }
       }
       break;
     }

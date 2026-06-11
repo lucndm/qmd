@@ -62,6 +62,11 @@ import {
   type EmbedProgress,
   type EmbedResult,
   type ChunkStrategy,
+  type IngestResult,
+  ingestFile as storeIngestFile,
+  moveInboxFile as storeMoveInboxFile,
+  listInboxFiles as storeListInboxFiles,
+  ensureInboxCollection as storeEnsureInboxCollection,
 } from "./store.js";
 import {
   LlamaCpp,
@@ -79,7 +84,7 @@ type LLMBackendConfig =
   | { type: "api"; config: OpenAILLMConfig };
 
 function resolveLLMBackend(models?: ModelsConfig): LLMBackendConfig {
-  const backend = process.env.QMD_LLM_BACKEND || models?.backend || "local";
+  const backend = process.env.QMD_LLM_BACKEND || models?.backend || "api";
   if (backend === "api") {
     return {
       type: "api",
@@ -139,7 +144,7 @@ export type { InternalStore };
 
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
-export type { ChunkStrategy } from "./store.js";
+export type { ChunkStrategy, IngestResult } from "./store.js";
 
 // Re-export getDefaultDbPath for CLI/MCP that need the default database location
 export { getDefaultDbPath } from "./store.js";
@@ -335,6 +340,17 @@ export interface QMDStore {
 
   /** Get index health info (stale embeddings, etc.) */
   getIndexHealth(): Promise<IndexHealthInfo>;
+
+  // ── Inbox & Upload ──────────────────────────────────────────────────
+
+  /** Ingest a file: save content, index FTS, generate embeddings. Targets inbox if no collection specified. */
+  ingestFile(content: string, filename: string, options?: { collection?: string; path?: string }): Promise<IngestResult>;
+
+  /** Move a file from inbox to a target collection */
+  moveInboxFile(filename: string, targetCollection: string, targetPath?: string): Promise<{ from: string; to: string; file: string }>;
+
+  /** List files currently in the inbox directory */
+  listInboxFiles(): string[];
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -563,6 +579,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     // Index Health
     getStatus: async () => internal.getStatus(),
     getIndexHealth: async () => internal.getIndexHealth(),
+
+    // Inbox & Upload
+    ingestFile: async (content, filename, opts) => storeIngestFile(internal, content, filename, opts),
+    moveInboxFile: async (filename, collection, path) => storeMoveInboxFile(internal, filename, collection, path),
+    listInboxFiles: () => storeListInboxFiles(),
 
     // Lifecycle
     close: async () => {

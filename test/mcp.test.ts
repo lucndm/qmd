@@ -10,7 +10,8 @@ import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "../src/llm";
+import { getDefaultLlamaCpp, disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm";
+import { OpenAILLM, type OpenAILLMConfig } from "../src/llm-openai.js";
 import { unlinkSync } from "node:fs";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -105,7 +106,7 @@ function initTestDatabase(db: Database): void {
   `);
 
   // Create vector table
-  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine)`);
+  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1024] distance_metric=cosine)`);
 
   // Store collections — makes the DB self-contained
   db.exec(`
@@ -183,8 +184,8 @@ function seedTestData(db: Database): void {
   }
 
   // Add embeddings for vector search
-  const embedding = new Float32Array(768);
-  for (let i = 0; i < 768; i++) embedding[i] = Math.random();
+  const embedding = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) embedding[i] = Math.random();
 
   for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
     db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
@@ -227,9 +228,19 @@ import type { RankedResult } from "../src/store";
 
 describe("MCP Server", () => {
   beforeAll(async () => {
-    // LlamaCpp uses node-llama-cpp for local model inference (no HTTP mocking needed)
-    // Use shared singleton to avoid creating multiple instances with separate GPU resources
-    getDefaultLlamaCpp();
+    // Use API backend when configured
+    if (process.env.QMD_LLM_BACKEND === "api") {
+      const apiConfig: OpenAILLMConfig = {
+        baseUrl: process.env.QMD_API_BASE_URL || "https://z.minhluc.info/",
+        apiKey: process.env.QMD_API_KEY,
+        embedModel: process.env.QMD_EMBED_MODEL,
+        generateModel: process.env.QMD_GENERATE_MODEL,
+        rerankModel: process.env.QMD_RERANK_MODEL,
+      };
+      setDefaultLlamaCpp(new OpenAILLM(apiConfig));
+    } else {
+      getDefaultLlamaCpp();
+    }
 
     // Reset index name in case another test file mutated it (bun test shares process)
     setConfigIndexName("index");

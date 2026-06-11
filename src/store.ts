@@ -15,10 +15,10 @@ import { openDatabase, loadSqliteVec } from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
-import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, mkdirSync, writeFileSync, readdirSync, renameSync, existsSync, copyFileSync, unlinkSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
-import { qmdHomedir } from "./paths.js";
+import { qmdHomedir, getInboxDir } from "./paths.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -5237,4 +5237,176 @@ export async function structuredSearch(
     })
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+}
+
+// =============================================================================
+// Inbox & Upload — Document ingestion and inbox management
+// =============================================================================
+
+/** Ensure the "inbox" collection exists in the database, pointing at ~/.cache/qmd/inbox/ */
+export function ensureInboxCollection(db: Database): void {
+  const existing = db.prepare(`SELECT name FROM store_collections WHERE name = ?`).get("inbox") as { name: string } | undefined;
+  if (existing) return;
+  upsertStoreCollection(db, "inbox", {
+    path: getInboxDir(),
+    pattern: "**/*.{md,txt}",
+    includeByDefault: true,
+  });
+}
+
+/** List .md and .txt files in the inbox directory */
+export function listInboxFiles(): string[] {
+  const dir = getInboxDir();
+  try {
+    return readdirSync(dir).filter(f => f.endsWith('.md') || f.endsWith('.txt'));
+  } catch {
+    return [];
+  }
+}
+
+/** Result of ingesting a file into QMD */
+export type IngestResult = {
+  docid: string;
+  file: string;
+  collection: string;
+  filepath: string;
+};
+
+/**
+ * Ingest a file: save content to disk, index into FTS, generate vector embeddings.
+ * If no collection specified, saves to the inbox directory.
+ */
+export async function ingestFile(
+  store: Store,
+  content: string,
+  filename: string,
+  options?: {
+    collection?: string;
+    path?: string;
+  }
+): Promise<IngestResult> {
+  const db = store.db;
+
+  // Sanitize filename — strip path separators
+  const safeName = filename.replace(/[/\\]/g, '_');
+  if (!safeName.endsWith('.md') && !safeName.endsWith('.txt')) {
+    throw new Error(`Unsupported file type: ${filename}. Only .md and .txt are supported.`);
+  }
+
+  let targetDir: string;
+  let collectionName: string;
+
+  if (options?.collection) {
+    // Resolve collection path from DB
+    const col = db.prepare(`SELECT path, pattern FROM store_collections WHERE name = ?`).get(options.collection) as { path: string; pattern: string } | undefined;
+    if (!col || !col.path) {
+      throw new Error(`Collection '${options.collection}' not found.`);
+    }
+    targetDir = resolve(col.path, options.path || "");
+    collectionName = options.collection;
+    // Ensure target subdirectory exists
+    mkdirSync(targetDir, { recursive: true });
+  } else {
+    // Save to inbox
+    ensureInboxCollection(db);
+    targetDir = getInboxDir();
+    collectionName = "inbox";
+  }
+
+  // Dedup filename — append timestamp if file already exists
+  let finalName = safeName;
+  let targetPath = resolve(targetDir, finalName);
+  if (existsSync(targetPath)) {
+    const ext = safeName.endsWith('.txt') ? '.txt' : '.md';
+    const base = safeName.slice(0, -ext.length);
+    finalName = `${base}-${Date.now()}${ext}`;
+    targetPath = resolve(targetDir, finalName);
+  }
+
+  // Write content to file
+  writeFileSync(targetPath, content, "utf-8");
+
+  // Get glob pattern for collection
+  const col2 = db.prepare(`SELECT pattern FROM store_collections WHERE name = ?`).get(collectionName) as { pattern: string } | undefined;
+  const globPattern = col2?.pattern || "**/*.{md,txt}";
+
+  // Reindex the collection (FTS)
+  await reindexCollection(store, targetDir, globPattern, collectionName);
+
+  // Generate embeddings for new documents
+  await generateEmbeddings(store, { collection: collectionName });
+
+  // Find docid for the just-indexed file
+  const relPath = normalizePathSeparators(finalName);
+  const doc = findOrMigrateLegacyDocument(db, collectionName, relPath);
+  const docid = doc?.hash?.slice(0, 6) || "";
+
+  return {
+    docid: docid ? `#${docid}` : "",
+    file: relPath,
+    collection: collectionName,
+    filepath: targetPath,
+  };
+}
+
+/**
+ * Move a file from inbox to a target collection directory.
+ * Reindexes both inbox and target collection after the move.
+ */
+export async function moveInboxFile(
+  store: Store,
+  filename: string,
+  targetCollection: string,
+  targetPath?: string
+): Promise<{ from: string; to: string; file: string }> {
+  const db = store.db;
+  const inboxDir = getInboxDir();
+  const srcPath = resolve(inboxDir, filename);
+
+  if (!existsSync(srcPath)) {
+    throw new Error(`File '${filename}' not found in inbox.`);
+  }
+
+  // Resolve target collection
+  const col = db.prepare(`SELECT path, pattern FROM store_collections WHERE name = ?`).get(targetCollection) as { path: string; pattern: string } | undefined;
+  if (!col || !col.path) {
+    throw new Error(`Collection '${targetCollection}' not found.`);
+  }
+
+  const dstDir = resolve(col.path, targetPath || "");
+  mkdirSync(dstDir, { recursive: true });
+  let dstPath = resolve(dstDir, filename);
+
+  // Dedup destination
+  if (existsSync(dstPath)) {
+    const ext = filename.endsWith('.txt') ? '.txt' : '.md';
+    const base = filename.slice(0, -ext.length);
+    dstPath = resolve(dstDir, `${base}-${Date.now()}${ext}`);
+  }
+
+  // Move file — try atomic rename, fallback to copy+delete for cross-device
+  try {
+    renameSync(srcPath, dstPath);
+  } catch (err: unknown) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EXDEV') {
+      copyFileSync(srcPath, dstPath);
+      unlinkSync(srcPath);
+    } else {
+      throw err;
+    }
+  }
+
+  // Reindex both collections
+  const inboxPattern = "**/*.{md,txt}";
+  await reindexCollection(store, inboxDir, inboxPattern, "inbox");
+  await reindexCollection(store, col.path, col.pattern || "**/*.md", targetCollection);
+
+  // Embed target collection for the new file
+  await generateEmbeddings(store, { collection: targetCollection });
+
+  return {
+    from: "inbox",
+    to: `${targetCollection}/${targetPath || ""}${filename}`,
+    file: filename,
+  };
 }

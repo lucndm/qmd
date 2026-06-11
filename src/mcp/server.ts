@@ -619,6 +619,113 @@ Intent-aware lex (C++ performance, not sports):
     }
   );
 
+  // ---------------------------------------------------------------------------
+  // Tool: upload (Upload a document)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "upload",
+    {
+      title: "Upload Document",
+      description: `Upload a markdown or plain text document to QMD. The document is saved to disk, indexed for full-text search (BM25), and embedded for semantic search — making it immediately queryable.
+
+If a collection is specified, the file is saved directly into that collection's directory. Otherwise it goes to the inbox (a virtual collection at ~/.cache/qmd/inbox/).
+
+Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to move files from inbox to a specific collection.`,
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      inputSchema: {
+        content: z.string().describe("Document content (markdown or plain text)"),
+        filename: z.string().describe("Filename with .md or .txt extension"),
+        collection: z.string().optional().describe("Target collection name. Omit to save to inbox. Use 'status' tool to see collection names."),
+        path: z.string().optional().describe("Sub-path within the collection directory (e.g., 'journal/2024/')"),
+      },
+    },
+    async ({ content, filename, collection, path }) => {
+      if (!filename.endsWith('.md') && !filename.endsWith('.txt')) {
+        return {
+          content: [{ type: "text", text: `Unsupported file type: ${filename}. Only .md and .txt are supported.` }],
+          isError: true,
+        };
+      }
+
+      try {
+        const result = await store.ingestFile(content, filename, { collection, path });
+        const summary = collection
+          ? `Uploaded ${result.file} to '${result.collection}' (${result.docid})`
+          : `Uploaded ${result.file} to inbox (${result.docid})`;
+
+        return {
+          content: [{ type: "text", text: summary }],
+          structuredContent: result,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Upload failed: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: inbox_move (Move file from inbox to collection)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "inbox_move",
+    {
+      title: "Move from Inbox",
+      description: "Move a file from the inbox to a target collection. The file is removed from inbox, saved into the collection directory, and re-indexed in both locations. Use 'status' tool to see available collection names.",
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      inputSchema: {
+        file: z.string().describe("Filename currently in inbox to move"),
+        collection: z.string().describe("Target collection name"),
+        path: z.string().optional().describe("Sub-path within the target collection directory"),
+      },
+    },
+    async ({ file, collection, path }) => {
+      try {
+        const result = await store.moveInboxFile(file, collection, path);
+        return {
+          content: [{ type: "text", text: `Moved ${result.file} from ${result.from} to ${result.to}` }],
+          structuredContent: result,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Move failed: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: inbox_list (List inbox files)
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "inbox_list",
+    {
+      title: "List Inbox",
+      description: "List all files currently in the inbox directory. Inbox files are indexed and searchable. Use 'inbox_move' to move files to a collection.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {},
+    },
+    async () => {
+      const files = store.listInboxFiles();
+      if (files.length === 0) {
+        return { content: [{ type: "text", text: "Inbox is empty." }] };
+      }
+      const summary = `Inbox (${files.length} file${files.length === 1 ? '' : 's'}):\n${files.map(f => `  - ${f}`).join('\n')}`;
+      return {
+        content: [{ type: "text", text: summary }],
+        structuredContent: { files },
+      };
+    }
+  );
+
   return server;
 }
 
@@ -762,6 +869,84 @@ export async function startMcpHttpServer(
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
         nodeRes.end(body);
         log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
+        return;
+      }
+
+      // REST endpoint: POST /upload — upload a document
+      if (pathname === "/upload" && nodeReq.method === "POST") {
+        const rawBody = await collectBody(nodeReq);
+        const params = JSON.parse(rawBody) as Record<string, unknown>;
+
+        if (!params.content || typeof params.content !== "string") {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Missing required field: content (string)" }));
+          return;
+        }
+        if (!params.filename || typeof params.filename !== "string") {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Missing required field: filename (string)" }));
+          return;
+        }
+
+        const filename = String(params.filename);
+        if (!filename.endsWith('.md') && !filename.endsWith('.txt')) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: `Unsupported file type: ${filename}. Only .md and .txt.` }));
+          return;
+        }
+
+        try {
+          const result = await store.ingestFile(String(params.content), filename, {
+            collection: typeof params.collection === "string" ? params.collection : undefined,
+            path: typeof params.path === "string" ? params.path : undefined,
+          });
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify(result));
+          log(`${ts()} POST /upload ${filename} → ${result.collection} (${Date.now() - reqStart}ms)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = msg.includes("not found") ? 404 : 500;
+          nodeRes.writeHead(status, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: msg }));
+        }
+        return;
+      }
+
+      // REST endpoint: GET /inbox — list inbox files
+      if (pathname === "/inbox" && nodeReq.method === "GET") {
+        const files = store.listInboxFiles();
+        nodeRes.writeHead(200, { "Content-Type": "application/json" });
+        nodeRes.end(JSON.stringify({ files }));
+        log(`${ts()} GET /inbox (${files.length} files, ${Date.now() - reqStart}ms)`);
+        return;
+      }
+
+      // REST endpoint: POST /inbox/move — move file from inbox to collection
+      if (pathname === "/inbox/move" && nodeReq.method === "POST") {
+        const rawBody = await collectBody(nodeReq);
+        const params = JSON.parse(rawBody) as Record<string, unknown>;
+
+        if (!params.file || !params.collection) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Missing required fields: file, collection" }));
+          return;
+        }
+
+        try {
+          const result = await store.moveInboxFile(
+            String(params.file),
+            String(params.collection),
+            typeof params.path === "string" ? params.path : undefined
+          );
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify(result));
+          log(`${ts()} POST /inbox/move ${params.file} → ${params.collection} (${Date.now() - reqStart}ms)`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = msg.includes("not found") ? 404 : 500;
+          nodeRes.writeHead(status, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: msg }));
+        }
         return;
       }
 

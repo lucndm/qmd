@@ -37,6 +37,14 @@ export class OpenAILLM implements LLM {
     this._rerankModelName = config.rerankModel || "qwen3-reranker-small";
   }
 
+  private resolveModel(requestedModel: string | undefined, defaultModel: string): string {
+    const model = requestedModel ?? defaultModel;
+    if (model.startsWith("hf:") || model.includes("/") || model.includes("GGUF") || model.includes("gguf") || model.includes("embeddinggemma")) {
+      return defaultModel;
+    }
+    return model;
+  }
+
   get embedModelName(): string { return this._embedModelName; }
   get generateModelName(): string { return this._generateModelName; }
   get rerankModelName(): string { return this._rerankModelName; }
@@ -44,7 +52,7 @@ export class OpenAILLM implements LLM {
   // -- Embeddings ----------------------------------------------------------------
 
   async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
-    const model = options?.model ?? this._embedModelName;
+    const model = this.resolveModel(options?.model, this._embedModelName);
     const input = stripEmbeddingFormat(text);
     const res = await this.fetch("/v1/embeddings", {
       model,
@@ -60,7 +68,7 @@ export class OpenAILLM implements LLM {
   }
 
   async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
-    const model = options?.model ?? this._embedModelName;
+    const model = this.resolveModel(options?.model, this._embedModelName);
     const input = texts.map(stripEmbeddingFormat);
     const res = await this.fetch("/v1/embeddings", {
       model,
@@ -78,7 +86,7 @@ export class OpenAILLM implements LLM {
   // -- Generation ----------------------------------------------------------------
 
   async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null> {
-    const model = options?.model ?? this._generateModelName;
+    const model = this.resolveModel(options?.model, this._generateModelName);
     const res = await this.fetch("/v1/chat/completions", {
       model,
       messages: [{ role: "user", content: prompt }],
@@ -91,11 +99,12 @@ export class OpenAILLM implements LLM {
       throw new Error(`generate API error: ${res.status} ${body}`);
     }
     const data = await res.json() as {
-      choices: Array<{ message: { content: string } }>;
+      choices: Array<{ message: { content: string | null } }>;
       model: string;
     };
+    const content = data.choices[0]?.message?.content;
     return {
-      text: data.choices[0]!.message.content,
+      text: content ?? "",
       model: data.model,
       done: true,
     };
@@ -161,7 +170,7 @@ export class OpenAILLM implements LLM {
     documents: RerankDocument[],
     options?: RerankOptions,
   ): Promise<RerankResult> {
-    const model = options?.model ?? this._rerankModelName;
+    const model = this.resolveModel(options?.model, this._rerankModelName);
     const res = await this.fetch("/rerank", {
       model,
       query,
@@ -216,14 +225,16 @@ export class OpenAILLM implements LLM {
   // -- HTTP helpers --------------------------------------------------------------
 
   private async fetch(path: string, body: unknown): Promise<Response> {
-    const url = `${this.config.baseUrl}${path}`;
+    const baseUrl = this.config.baseUrl.replace(/\/+$/, "");
+    const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.config.apiKey) headers["Authorization"] = `Bearer ${this.config.apiKey}`;
     return fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
   }
 
   private async fetchRaw(path: string): Promise<Response> {
-    const url = `${this.config.baseUrl}${path}`;
+    const baseUrl = this.config.baseUrl.replace(/\/+$/, "");
+    const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {};
     if (this.config.apiKey) headers["Authorization"] = `Bearer ${this.config.apiKey}`;
     return fetch(url, { method: "GET", headers });

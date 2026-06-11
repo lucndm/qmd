@@ -180,7 +180,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
 
     // Generate embeddings for test documents
     const llm = getDefaultLlamaCpp();
-    store.ensureVecTable(768); // embeddinggemma uses 768 dimensions
+    store.ensureVecTable(1024);
 
     const evalDocsDir = join(dirname(fileURLToPath(import.meta.url)), "eval-docs");
     const files = readdirSync(evalDocsDir).filter(f => f.endsWith(".md"));

@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Features
+
+- **Inbox & Upload**: New document ingestion pipeline for uploading .md/.txt files
+  via CLI (`qmd inbox`), MCP tools (`upload`, `inbox_move`, `inbox_list`), and REST
+  endpoints (`POST /upload`, `GET /inbox`, `POST /inbox/move`). Files land in
+  `~/.cache/qmd/inbox/` by default and can be moved to named collections later.
+
+- **API backend as default**: `QMD_LLM_BACKEND` now defaults to `"api"` instead of
+  `"local"`. The OpenAI-compatible backend (`llm-openai.ts`) uses `qwen3-embedding-small`
+  for embeddings, `MiniMax-M2.7` for generation, and `qwen3-reranker-small` for reranking
+  via LiteLLM proxy. Local GGUF models still available via `QMD_LLM_BACKEND=local`.
+
+- **Smart model name resolution**: `OpenAILLM.resolveModel()` auto-maps local GGUF
+  model paths (e.g. `hf:ggml-org/embeddinggemma-300M-GGUF/...`) to API-compatible
+  model names, so code passing local model identifiers works transparently with the
+  API backend.
+
+### Fixed
+
+- `OpenAILLM.generate()` now handles `null` `content` in API responses (some models
+  return `content: null` with reasoning in a separate field) by defaulting to empty
+  string instead of crashing.
+
+- Double-slash in API URLs (`https://host//rerank`) caused 404 errors with some HTTP
+  clients. `baseUrl` trailing slashes are now stripped in `fetch()`/`fetchRaw()`.
+
+- Test dimension mismatch: vector test data updated from 768 to 1024 dimensions to
+  match `qwen3-embedding-small` output.
+
+- Test mocks missing `tokenize` method caused `llm.tokenize is not a function` errors
+  in embedding batching tests. All fake LLM mocks now include a tokenizer.
+
 ### Fixed
 
 - Filesystem paths with special characters (`#`, `&`, spaces, `[]`, `()`, etc.)
