@@ -3,9 +3,31 @@ import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
 import { fileURLToPath } from "url";
-import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
+import {
+  basename,
+  dirname,
+  join as pathJoin,
+  relative as relativePath,
+  resolve as pathResolve,
+} from "path";
 import { parseArgs } from "util";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import {
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  existsSync,
+  unlinkSync,
+  writeFileSync,
+  openSync,
+  closeSync,
+  mkdirSync,
+  lstatSync,
+  rmSync,
+  symlinkSync,
+  readlinkSync,
+  copyFileSync,
+} from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -78,15 +100,37 @@ import {
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
+  moveInboxFile,
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
 import { getInboxDir } from "../paths.js";
-import { loadCloudConfig, saveCloudConfig, getCloudConfigPath, resolveRemoteName, type CloudConfig } from "../cloud/config.js";
+import {
+  loadCloudConfig,
+  saveCloudConfig,
+  getCloudConfigPath,
+  resolveRemoteName,
+  type CloudConfig,
+} from "../cloud/config.js";
 import { validateConnection, createCloudClient } from "../cloud/client.js";
 import { pushToRemote } from "../cloud/push.js";
 import { pullFromRemote } from "../cloud/pull.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, withLLMSessionForLlm, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import {
+  disposeDefaultLlamaCpp,
+  getDefaultLlamaCpp,
+  setDefaultLlamaCpp,
+  LlamaCpp,
+  withLLMSession,
+  withLLMSessionForLlm,
+  pullModels,
+  DEFAULT_MODEL_CACHE_DIR,
+  resolveEmbedModel,
+  resolveGenerateModel,
+  resolveRerankModel,
+  resolveModels,
+  inspectGgufFile,
+  isDarwinMetalMitigationActive,
+} from "../llm.js";
 import { OpenAILLM, type OpenAILLMConfig } from "../llm-openai.js";
 import {
   formatSearchResults,
@@ -168,7 +212,9 @@ function getStore(): ReturnType<typeof createStore> {
       // API backend: set store.llm directly (LLM interface, not LlamaCpp class)
       (store as any).llm = llm;
       // Still set default for any code that falls back to getDefaultLlamaCpp()
-      setDefaultLlamaCpp(new LlamaCpp({ embedModel: "", generateModel: "", rerankModel: "" }));
+      setDefaultLlamaCpp(
+        new LlamaCpp({ embedModel: "", generateModel: "", rerankModel: "" }),
+      );
     }
   }
   return store;
@@ -209,13 +255,15 @@ function getActiveIndexName(): string {
 function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths
-  if (name && name.includes('/')) {
+  if (name && name.includes("/")) {
     const absolutePath = pathResolve(process.cwd(), name);
     // Replace path separators with underscores to create a valid filename
-    normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
+    normalizedName = absolutePath.replace(/\//g, "_").replace(/^_/, "");
   }
   currentIndexName = normalizedName || "index";
-  storeDbPathOverride = normalizedName ? getDefaultDbPath(normalizedName) : undefined;
+  storeDbPathOverride = normalizedName
+    ? getDefaultDbPath(normalizedName)
+    : undefined;
   // Reset open handle so next use opens the new index
   closeDb();
 }
@@ -241,12 +289,19 @@ const c = {
 
 // Terminal cursor control
 const cursor = {
-  hide() { process.stderr.write('\x1b[?25l'); },
-  show() { process.stderr.write('\x1b[?25h'); },
+  hide() {
+    process.stderr.write("\x1b[?25l");
+  },
+  show() {
+    process.stderr.write("\x1b[?25h");
+  },
 };
 
 type CliLifecycleWritable = {
-  write(chunk: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+  write(
+    chunk: string | Uint8Array,
+    callback?: (error?: Error | null) => void,
+  ): boolean;
 };
 
 type FinishSuccessfulCliCommandOptions = {
@@ -288,7 +343,9 @@ async function flushWritable(stream: CliLifecycleWritable): Promise<void> {
  * the lifecycle tests verify the legacy flush → cleanup → exit ordering.
  * Production callers must not pass `exit`.
  */
-export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCommandOptions): Promise<void> {
+export async function finishSuccessfulCliCommand(
+  options: FinishSuccessfulCliCommandOptions,
+): Promise<void> {
   const stderr = options.stderr ?? process.stderr;
 
   await flushWritable(options.stdout ?? process.stdout);
@@ -297,7 +354,7 @@ export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCom
     await (options.cleanup ?? disposeDefaultLlamaCpp)();
   } catch (error) {
     stderr.write(
-      `QMD Warning: cleanup after successful output failed (${error instanceof Error ? error.message : String(error)}); exiting 0 because command output completed.\n`
+      `QMD Warning: cleanup after successful output failed (${error instanceof Error ? error.message : String(error)}); exiting 0 because command output completed.\n`,
     );
   }
   await flushWritable(stderr);
@@ -311,8 +368,14 @@ export async function finishSuccessfulCliCommand(options: FinishSuccessfulCliCom
 }
 
 // Ensure cursor is restored on exit
-process.on('SIGINT', () => { cursor.show(); process.exit(130); });
-process.on('SIGTERM', () => { cursor.show(); process.exit(143); });
+process.on("SIGINT", () => {
+  cursor.show();
+  process.exit(130);
+});
+process.on("SIGTERM", () => {
+  cursor.show();
+  process.exit(143);
+});
 
 // Terminal progress bar using OSC 9;4 escape sequence (TTY only)
 const isTTY = process.stderr.isTTY;
@@ -334,28 +397,37 @@ const progress = {
 // Format seconds into human-readable ETA
 function formatETA(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  if (seconds < 3600)
+    return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
-
 // Check index health and print warnings/tips
-function checkIndexHealth(db: Database, model: string = resolveEmbedModelForCli()): void {
+function checkIndexHealth(
+  db: Database,
+  model: string = resolveEmbedModelForCli(),
+): void {
   const { needsEmbedding, totalDocs, daysStale } = getIndexHealth(db, model);
 
   // Warn if many docs need embedding
   if (needsEmbedding > 0) {
     const pct = Math.round((needsEmbedding / totalDocs) * 100);
     if (pct >= 10) {
-      process.stderr.write(`${c.yellow}Warning: ${needsEmbedding} documents (${pct}%) need embeddings. Run 'qmd embed' for better results.${c.reset}\n`);
+      process.stderr.write(
+        `${c.yellow}Warning: ${needsEmbedding} documents (${pct}%) need embeddings. Run 'qmd embed' for better results.${c.reset}\n`,
+      );
     } else {
-      process.stderr.write(`${c.dim}Tip: ${needsEmbedding} documents need embeddings. Run 'qmd embed' to index them.${c.reset}\n`);
+      process.stderr.write(
+        `${c.dim}Tip: ${needsEmbedding} documents need embeddings. Run 'qmd embed' to index them.${c.reset}\n`,
+      );
     }
   }
 
   // Check if most recent document update is older than 2 weeks
   if (daysStale !== null && daysStale >= 14) {
-    process.stderr.write(`${c.dim}Tip: Index last updated ${daysStale} days ago. Run 'qmd update' to refresh.${c.reset}\n`);
+    process.stderr.write(
+      `${c.dim}Tip: Index last updated ${daysStale} days ago. Run 'qmd update' to refresh.${c.reset}\n`,
+    );
   }
 }
 
@@ -364,14 +436,14 @@ function checkIndexHealth(db: Database, model: string = resolveEmbedModelForCli(
 function computeDisplayPath(
   filepath: string,
   collectionPath: string,
-  existingPaths: Set<string>
+  existingPaths: Set<string>,
 ): string {
   // Get path relative to collection (include collection dir name)
-  const collectionDir = collectionPath.replace(/\/$/, '');
-  const collectionName = collectionDir.split('/').pop() || '';
+  const collectionDir = collectionPath.replace(/\/$/, "");
+  const collectionName = collectionDir.split("/").pop() || "";
 
   let relativePath: string;
-  if (filepath.startsWith(collectionDir + '/')) {
+  if (filepath.startsWith(collectionDir + "/")) {
     // filepath is under collection: use collection name + relative path
     relativePath = collectionName + filepath.slice(collectionDir.length);
   } else {
@@ -379,13 +451,13 @@ function computeDisplayPath(
     relativePath = filepath;
   }
 
-  const parts = relativePath.split('/').filter(p => p.length > 0);
+  const parts = relativePath.split("/").filter((p) => p.length > 0);
 
   // Always include at least parent folder + filename (minimum 2 parts if available)
   // Then add more parent dirs until unique
   const minParts = Math.min(2, parts.length);
   for (let i = parts.length - minParts; i >= 0; i--) {
-    const candidate = parts.slice(i).join('/');
+    const candidate = parts.slice(i).join("/");
     if (!existingPaths.has(candidate)) {
       return candidate;
     }
@@ -394,7 +466,6 @@ function computeDisplayPath(
   // Absolute fallback: use full path (should be unique)
   return filepath;
 }
-
 
 function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -415,7 +486,8 @@ function formatMs(ms: number): string {
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
@@ -430,7 +502,9 @@ function sameDirectory(a: string, b: string): boolean {
 function initLocalIndex(): void {
   const cwd = getPwd();
   if (sameDirectory(cwd, homedir())) {
-    throw new Error("Refusing to initialize a local index in $HOME. The global index is automatically created; run `qmd collection add <path>` for the global index, or run `qmd init` inside a project folder.");
+    throw new Error(
+      "Refusing to initialize a local index in $HOME. The global index is automatically created; run `qmd collection add <path>` for the global index, or run `qmd init` inside a project folder.",
+    );
   }
 
   const qmdDir = pathJoin(cwd, ".qmd");
@@ -462,13 +536,18 @@ function initLocalIndex(): void {
 
 function isForceCpuEnabled(): boolean {
   const value = process.env.QMD_FORCE_CPU;
-  return !!value && !["false", "off", "none", "disable", "disabled", "0"].includes(value.trim().toLowerCase());
+  return (
+    !!value &&
+    !["false", "off", "none", "disable", "disabled", "0"].includes(
+      value.trim().toLowerCase(),
+    )
+  );
 }
 
 function configuredGpuModeLabel(): string {
   return isForceCpuEnabled()
     ? "CPU forced (QMD_FORCE_CPU)"
-    : (process.env.QMD_LLAMA_GPU?.trim() || "auto");
+    : process.env.QMD_LLAMA_GPU?.trim() || "auto";
 }
 
 function summarizeDeviceNames(names: string[]): string {
@@ -477,7 +556,7 @@ function summarizeDeviceNames(names: string[]): string {
     counts.set(name, (counts.get(name) || 0) + 1);
   }
   return Array.from(counts.entries())
-    .map(([name, count]) => count > 1 ? `${count}× ${name}` : name)
+    .map(([name, count]) => (count > 1 ? `${count}× ${name}` : name))
     .join(", ");
 }
 
@@ -487,7 +566,7 @@ function sanitizeDiagnosticMessage(message: string): string {
     .replaceAll(home, "~")
     .replaceAll(process.cwd(), ".")
     .split("\n")
-    .map(line => line.trim())
+    .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, 3)
     .join("; ");
@@ -505,19 +584,31 @@ async function showStatus(): Promise<void> {
   try {
     const stat = statSync(dbPath).size;
     indexSize = stat;
-  } catch { }
+  } catch {}
 
   // Collections info (from YAML + database stats)
   const collections = listCollections(db);
 
   // Overall stats
-  const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
-  const vectorCount = db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number };
+  const totalDocs = db
+    .prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`)
+    .get() as { count: number };
+  const vectorCount = db
+    .prepare(`SELECT COUNT(*) as count FROM content_vectors`)
+    .get() as { count: number };
   const statusEmbedModel = resolveEmbedModelForCli();
-  const needsEmbedding = getHashesNeedingEmbedding(db, undefined, statusEmbedModel);
+  const needsEmbedding = getHashesNeedingEmbedding(
+    db,
+    undefined,
+    statusEmbedModel,
+  );
 
   // Most recent update across all collections
-  const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
+  const mostRecent = db
+    .prepare(
+      `SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`,
+    )
+    .get() as { latest: string | null };
 
   console.log(`${c.bold}QMD Status${c.reset}\n`);
   console.log(`Index: ${dbPath}`);
@@ -544,7 +635,9 @@ async function showStatus(): Promise<void> {
   console.log(`  Total:    ${totalDocs.count} files indexed`);
   console.log(`  Vectors:  ${vectorCount.count} embedded`);
   if (needsEmbedding > 0) {
-    console.log(`  ${c.yellow}Pending:  ${needsEmbedding} need embedding${c.reset} (run 'qmd embed')`);
+    console.log(
+      `  ${c.yellow}Pending:  ${needsEmbedding} need embedding${c.reset} (run 'qmd embed')`,
+    );
   }
   if (mostRecent.latest) {
     const lastUpdate = new Date(mostRecent.latest);
@@ -553,7 +646,10 @@ async function showStatus(): Promise<void> {
 
   // Get all contexts grouped by collection (from YAML)
   const allContexts = listAllContexts();
-  const contextsByCollection = new Map<string, { path_prefix: string; context: string }[]>();
+  const contextsByCollection = new Map<
+    string,
+    { path_prefix: string; context: string }[]
+  >();
 
   for (const ctx of allContexts) {
     // Group contexts by collection name
@@ -562,7 +658,7 @@ async function showStatus(): Promise<void> {
     }
     contextsByCollection.get(ctx.collection)!.push({
       path_prefix: ctx.path,
-      context: ctx.context
+      context: ctx.context,
     });
   }
 
@@ -572,19 +668,26 @@ async function showStatus(): Promise<void> {
     const ast = await getASTStatus();
     console.log(`\n${c.bold}AST Chunking${c.reset}`);
     if (ast.available) {
-      const ok = ast.languages.filter(l => l.available).map(l => l.language);
-      const fail = ast.languages.filter(l => !l.available);
+      const ok = ast.languages
+        .filter((l) => l.available)
+        .map((l) => l.language);
+      const fail = ast.languages.filter((l) => !l.available);
       console.log(`  Status:   ${c.green}active${c.reset}`);
       console.log(`  Languages: ${ok.join(", ")}`);
       if (fail.length > 0) {
         for (const f of fail) {
-          console.log(`  ${c.yellow}Unavailable: ${f.language} (${f.error})${c.reset}`);
+          console.log(
+            `  ${c.yellow}Unavailable: ${f.language} (${f.error})${c.reset}`,
+          );
         }
       }
     } else {
-      console.log(`  Status:   ${c.yellow}unavailable${c.reset} (falling back to regex chunking)`);
+      console.log(
+        `  Status:   ${c.yellow}unavailable${c.reset} (falling back to regex chunking)`,
+      );
       for (const l of ast.languages) {
-        if (l.error) console.log(`  ${c.dim}${l.language}: ${l.error}${c.reset}`);
+        if (l.error)
+          console.log(`  ${c.dim}${l.language}: ${l.error}${c.reset}`);
       }
     }
   } catch {
@@ -595,22 +698,34 @@ async function showStatus(): Promise<void> {
   if (collections.length > 0) {
     console.log(`\n${c.bold}Collections${c.reset}`);
     for (const col of collections) {
-      const lastMod = col.last_modified ? formatTimeAgo(new Date(col.last_modified)) : "never";
+      const lastMod = col.last_modified
+        ? formatTimeAgo(new Date(col.last_modified))
+        : "never";
       const contexts = contextsByCollection.get(col.name) || [];
 
-      console.log(`  ${c.cyan}${col.name}${c.reset} ${c.dim}(qmd://${col.name}/)${c.reset}`);
+      console.log(
+        `  ${c.cyan}${col.name}${c.reset} ${c.dim}(qmd://${col.name}/)${c.reset}`,
+      );
       console.log(`    ${c.dim}Pattern:${c.reset}  ${col.glob_pattern}`);
-      console.log(`    ${c.dim}Files:${c.reset}    ${col.active_count} (updated ${lastMod})`);
+      console.log(
+        `    ${c.dim}Files:${c.reset}    ${col.active_count} (updated ${lastMod})`,
+      );
 
       if (contexts.length > 0) {
         console.log(`    ${c.dim}Contexts:${c.reset} ${contexts.length}`);
         for (const ctx of contexts) {
           // Handle both empty string and '/' as root context
-          const pathDisplay = (ctx.path_prefix === '' || ctx.path_prefix === '/') ? '/' : `/${ctx.path_prefix}`;
-          const contextPreview = ctx.context.length > 60
-            ? ctx.context.substring(0, 57) + '...'
-            : ctx.context;
-          console.log(`      ${c.dim}${pathDisplay}:${c.reset} ${contextPreview}`);
+          const pathDisplay =
+            ctx.path_prefix === "" || ctx.path_prefix === "/"
+              ? "/"
+              : `/${ctx.path_prefix}`;
+          const contextPreview =
+            ctx.context.length > 60
+              ? ctx.context.substring(0, 57) + "..."
+              : ctx.context;
+          console.log(
+            `      ${c.dim}${pathDisplay}:${c.reset} ${contextPreview}`,
+          );
         }
       }
     }
@@ -630,7 +745,9 @@ async function showStatus(): Promise<void> {
       console.log(`  qmd search "query" -c ${collections[0].name}`);
     }
   } else {
-    console.log(`\n${c.dim}No collections. Run 'qmd collection add .' to index markdown files.${c.reset}`);
+    console.log(
+      `\n${c.dim}No collections. Run 'qmd collection add .' to index markdown files.${c.reset}`,
+    );
   }
 
   // Models
@@ -647,33 +764,52 @@ async function showStatus(): Promise<void> {
     console.log(`  Generation:  ${hfLink(activeModels.generate)}`);
   }
 
-
   // Tips section
   const tips: string[] = [];
 
   // Check for collections without context
-  const collectionsWithoutContext = collections.filter(col => {
+  const collectionsWithoutContext = collections.filter((col) => {
     const contexts = contextsByCollection.get(col.name) || [];
     return contexts.length === 0;
   });
   if (collectionsWithoutContext.length > 0) {
-    const names = collectionsWithoutContext.map(c => c.name).slice(0, 3).join(', ');
-    const more = collectionsWithoutContext.length > 3 ? ` +${collectionsWithoutContext.length - 3} more` : '';
-    tips.push(`Add context to collections for better search results: ${names}${more}`);
-    tips.push(`  ${c.dim}qmd context add qmd://<name>/ "What this collection contains"${c.reset}`);
-    tips.push(`  ${c.dim}qmd context add qmd://<name>/meeting-notes "Weekly team meeting notes"${c.reset}`);
+    const names = collectionsWithoutContext
+      .map((c) => c.name)
+      .slice(0, 3)
+      .join(", ");
+    const more =
+      collectionsWithoutContext.length > 3
+        ? ` +${collectionsWithoutContext.length - 3} more`
+        : "";
+    tips.push(
+      `Add context to collections for better search results: ${names}${more}`,
+    );
+    tips.push(
+      `  ${c.dim}qmd context add qmd://<name>/ "What this collection contains"${c.reset}`,
+    );
+    tips.push(
+      `  ${c.dim}qmd context add qmd://<name>/meeting-notes "Weekly team meeting notes"${c.reset}`,
+    );
   }
 
   // Check for collections without update commands
-  const collectionsWithoutUpdate = collections.filter(col => {
+  const collectionsWithoutUpdate = collections.filter((col) => {
     const yamlCol = getCollectionFromYaml(col.name);
     return !yamlCol?.update;
   });
   if (collectionsWithoutUpdate.length > 0 && collections.length > 1) {
-    const names = collectionsWithoutUpdate.map(c => c.name).slice(0, 3).join(', ');
-    const more = collectionsWithoutUpdate.length > 3 ? ` +${collectionsWithoutUpdate.length - 3} more` : '';
+    const names = collectionsWithoutUpdate
+      .map((c) => c.name)
+      .slice(0, 3)
+      .join(", ");
+    const more =
+      collectionsWithoutUpdate.length > 3
+        ? ` +${collectionsWithoutUpdate.length - 3} more`
+        : "";
     tips.push(`Add update commands to keep collections fresh: ${names}${more}`);
-    tips.push(`  ${c.dim}qmd collection update-cmd <name> 'git stash && git pull --rebase --ff-only && git stash pop'${c.reset}`);
+    tips.push(
+      `  ${c.dim}qmd collection update-cmd <name> 'git stash && git pull --rebase --ff-only && git stash pop'${c.reset}`,
+    );
   }
 
   if (tips.length > 0) {
@@ -697,46 +833,74 @@ async function updateCollections(): Promise<void> {
   const collections = listCollections(db);
 
   if (collections.length === 0) {
-    console.log(`${c.dim}No collections found. Run 'qmd collection add .' to index markdown files.${c.reset}`);
+    console.log(
+      `${c.dim}No collections found. Run 'qmd collection add .' to index markdown files.${c.reset}`,
+    );
     closeDb();
     return;
   }
 
-  console.log(`${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`);
+  console.log(
+    `${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`,
+  );
 
   for (let i = 0; i < collections.length; i++) {
     const col = collections[i];
     if (!col) continue;
-    console.log(`${c.cyan}[${i + 1}/${collections.length}]${c.reset} ${c.bold}${col.name}${c.reset} ${c.dim}(${col.glob_pattern})${c.reset}`);
+    console.log(
+      `${c.cyan}[${i + 1}/${collections.length}]${c.reset} ${c.bold}${col.name}${c.reset} ${c.dim}(${col.glob_pattern})${c.reset}`,
+    );
 
     // Execute custom update command if specified in YAML
     const yamlCol = getCollectionFromYaml(col.name);
     if (yamlCol?.update) {
-      console.log(`${c.dim}    Running update command: ${yamlCol.update}${c.reset}`);
+      console.log(
+        `${c.dim}    Running update command: ${yamlCol.update}${c.reset}`,
+      );
       try {
         const proc = nodeSpawn("bash", ["-c", yamlCol.update], {
           cwd: col.pwd,
           stdio: ["ignore", "pipe", "pipe"],
         });
 
-        const [output, errorOutput, exitCode] = await new Promise<[string, string, number]>((resolve, reject) => {
+        const [output, errorOutput, exitCode] = await new Promise<
+          [string, string, number]
+        >((resolve, reject) => {
           let out = "";
           let err = "";
-          proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-          proc.stderr?.on("data", (d: Buffer) => { err += d.toString(); });
+          proc.stdout?.on("data", (d: Buffer) => {
+            out += d.toString();
+          });
+          proc.stderr?.on("data", (d: Buffer) => {
+            err += d.toString();
+          });
           proc.on("error", reject);
           proc.on("close", (code) => resolve([out, err, code ?? 1]));
         });
 
         if (output.trim()) {
-          console.log(output.trim().split('\n').map(l => `    ${l}`).join('\n'));
+          console.log(
+            output
+              .trim()
+              .split("\n")
+              .map((l) => `    ${l}`)
+              .join("\n"),
+          );
         }
         if (errorOutput.trim()) {
-          console.log(errorOutput.trim().split('\n').map(l => `    ${l}`).join('\n'));
+          console.log(
+            errorOutput
+              .trim()
+              .split("\n")
+              .map((l) => `    ${l}`)
+              .join("\n"),
+          );
         }
 
         if (exitCode !== 0) {
-          console.log(`${c.yellow}✗ Update command failed with exit code ${exitCode}${c.reset}`);
+          console.log(
+            `${c.yellow}✗ Update command failed with exit code ${exitCode}${c.reset}`,
+          );
           process.exit(exitCode);
         }
       } catch (err) {
@@ -749,22 +913,35 @@ async function updateCollections(): Promise<void> {
     console.log(`Collection: ${col.pwd} (${col.glob_pattern})`);
     progress.indeterminate();
 
-    const result = await reindexCollection(storeInstance, col.pwd, col.glob_pattern, col.name, {
-      ignorePatterns: yamlCol?.ignore,
-      onProgress: (info) => {
-        progress.set((info.current / info.total) * 100);
-        const elapsed = (Date.now() - startTime) / 1000;
-        const rate = info.current / elapsed;
-        const remaining = (info.total - info.current) / rate;
-        const eta = info.current > 2 ? ` ETA: ${formatETA(remaining)}` : "";
-        if (isTTY) process.stderr.write(`\rIndexing: ${info.current}/${info.total}${eta}        `);
+    const result = await reindexCollection(
+      storeInstance,
+      col.pwd,
+      col.glob_pattern,
+      col.name,
+      {
+        ignorePatterns: yamlCol?.ignore,
+        onProgress: (info) => {
+          progress.set((info.current / info.total) * 100);
+          const elapsed = (Date.now() - startTime) / 1000;
+          const rate = info.current / elapsed;
+          const remaining = (info.total - info.current) / rate;
+          const eta = info.current > 2 ? ` ETA: ${formatETA(remaining)}` : "";
+          if (isTTY)
+            process.stderr.write(
+              `\rIndexing: ${info.current}/${info.total}${eta}        `,
+            );
+        },
       },
-    });
+    );
 
     progress.clear();
-    console.log(`\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`);
+    console.log(
+      `\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`,
+    );
     if (result.orphanedCleaned > 0) {
-      console.log(`Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`);
+      console.log(
+        `Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`,
+      );
     }
     console.log("");
   }
@@ -775,7 +952,9 @@ async function updateCollections(): Promise<void> {
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
   if (needsEmbedding > 0) {
-    console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
+    console.log(
+      `\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`,
+    );
   }
 }
 
@@ -783,7 +962,10 @@ async function updateCollections(): Promise<void> {
  * Detect which collection (if any) contains the given filesystem path.
  * Returns { collectionId, collectionName, relativePath } or null if not in any collection.
  */
-function detectCollectionFromPath(db: Database, fsPath: string): { collectionName: string; relativePath: string } | null {
+function detectCollectionFromPath(
+  db: Database,
+  fsPath: string,
+): { collectionName: string; relativePath: string } | null {
   const realPath = getRealPath(fsPath);
 
   // Find collections that this path is under from YAML
@@ -792,7 +974,7 @@ function detectCollectionFromPath(db: Database, fsPath: string): { collectionNam
   // Find longest matching path
   let bestMatch: { name: string; path: string } | null = null;
   for (const coll of allCollections) {
-    if (realPath.startsWith(coll.path + '/') || realPath === coll.path) {
+    if (realPath.startsWith(coll.path + "/") || realPath === coll.path) {
       if (!bestMatch || coll.path.length > bestMatch.path.length) {
         bestMatch = { name: coll.name, path: coll.path };
       }
@@ -803,23 +985,26 @@ function detectCollectionFromPath(db: Database, fsPath: string): { collectionNam
 
   // Calculate relative path
   let relativePath = realPath;
-  if (relativePath.startsWith(bestMatch.path + '/')) {
+  if (relativePath.startsWith(bestMatch.path + "/")) {
     relativePath = relativePath.slice(bestMatch.path.length + 1);
   } else if (relativePath === bestMatch.path) {
-    relativePath = '';
+    relativePath = "";
   }
 
   return {
     collectionName: bestMatch.name,
-    relativePath
+    relativePath,
   };
 }
 
-async function contextAdd(pathArg: string | undefined, contextText: string): Promise<void> {
+async function contextAdd(
+  pathArg: string | undefined,
+  contextText: string,
+): Promise<void> {
   const db = getDb();
 
   // Handle "/" as global context (applies to all collections)
-  if (pathArg === '/') {
+  if (pathArg === "/") {
     setGlobalContext(contextText);
     resyncConfig();
     console.log(`${c.green}✓${c.reset} Set global context`);
@@ -829,12 +1014,12 @@ async function contextAdd(pathArg: string | undefined, contextText: string): Pro
   }
 
   // Resolve path - defaults to current directory if not provided
-  let fsPath = pathArg || '.';
-  if (fsPath === '.' || fsPath === './') {
+  let fsPath = pathArg || ".";
+  if (fsPath === "." || fsPath === "./") {
     fsPath = getPwd();
-  } else if (fsPath.startsWith('~/')) {
+  } else if (fsPath.startsWith("~/")) {
     fsPath = homedir() + fsPath.slice(1);
-  } else if (!fsPath.startsWith('/') && !fsPath.startsWith('qmd://')) {
+  } else if (!fsPath.startsWith("/") && !fsPath.startsWith("qmd://")) {
     fsPath = resolve(getPwd(), fsPath);
   }
 
@@ -848,7 +1033,9 @@ async function contextAdd(pathArg: string | undefined, contextText: string): Pro
 
     const coll = getCollectionFromYaml(parsed.collectionName);
     if (!coll) {
-      console.error(`${c.yellow}Collection not found: ${parsed.collectionName}${c.reset}`);
+      console.error(
+        `${c.yellow}Collection not found: ${parsed.collectionName}${c.reset}`,
+      );
       process.exit(1);
     }
 
@@ -867,15 +1054,21 @@ async function contextAdd(pathArg: string | undefined, contextText: string): Pro
   // Detect collection from filesystem path
   const detected = detectCollectionFromPath(db, fsPath);
   if (!detected) {
-    console.error(`${c.yellow}Path is not in any indexed collection: ${fsPath}${c.reset}`);
-    console.error(`${c.dim}Run 'qmd status' to see indexed collections${c.reset}`);
+    console.error(
+      `${c.yellow}Path is not in any indexed collection: ${fsPath}${c.reset}`,
+    );
+    console.error(
+      `${c.dim}Run 'qmd status' to see indexed collections${c.reset}`,
+    );
     process.exit(1);
   }
 
   yamlAddContext(detected.collectionName, detected.relativePath, contextText);
   resyncConfig();
 
-  const displayPath = detected.relativePath ? `qmd://${detected.collectionName}/${detected.relativePath}` : `qmd://${detected.collectionName}/`;
+  const displayPath = detected.relativePath
+    ? `qmd://${detected.collectionName}/${detected.relativePath}`
+    : `qmd://${detected.collectionName}/`;
   console.log(`${c.green}✓${c.reset} Added context for: ${displayPath}`);
   console.log(`${c.dim}Context: ${contextText}${c.reset}`);
   closeDb();
@@ -887,21 +1080,23 @@ function contextList(): void {
   const allContexts = listAllContexts();
 
   if (allContexts.length === 0) {
-    console.log(`${c.dim}No contexts configured. Use 'qmd context add' to add one.${c.reset}`);
+    console.log(
+      `${c.dim}No contexts configured. Use 'qmd context add' to add one.${c.reset}`,
+    );
     closeDb();
     return;
   }
 
   console.log(`\n${c.bold}Configured Contexts${c.reset}\n`);
 
-  let lastCollection = '';
+  let lastCollection = "";
   for (const ctx of allContexts) {
     if (ctx.collection !== lastCollection) {
       console.log(`${c.cyan}${ctx.collection}${c.reset}`);
       lastCollection = ctx.collection;
     }
 
-    const displayPath = ctx.path ? `  ${ctx.path}` : '  / (root)';
+    const displayPath = ctx.path ? `  ${ctx.path}` : "  / (root)";
     console.log(`${displayPath}`);
     console.log(`    ${c.dim}${ctx.context}${c.reset}`);
   }
@@ -910,7 +1105,7 @@ function contextList(): void {
 }
 
 function contextRemove(pathArg: string): void {
-  if (pathArg === '/') {
+  if (pathArg === "/") {
     // Remove global context
     setGlobalContext(undefined);
     // Resync so SQLite store_config is updated
@@ -931,7 +1126,9 @@ function contextRemove(pathArg: string): void {
 
     const coll = getCollectionFromYaml(parsed.collectionName);
     if (!coll) {
-      console.error(`${c.yellow}Collection not found: ${parsed.collectionName}${c.reset}`);
+      console.error(
+        `${c.yellow}Collection not found: ${parsed.collectionName}${c.reset}`,
+      );
       process.exit(1);
     }
 
@@ -948,11 +1145,11 @@ function contextRemove(pathArg: string): void {
 
   // Handle filesystem paths
   let fsPath = pathArg;
-  if (fsPath === '.' || fsPath === './') {
+  if (fsPath === "." || fsPath === "./") {
     fsPath = getPwd();
-  } else if (fsPath.startsWith('~/')) {
+  } else if (fsPath.startsWith("~/")) {
     fsPath = homedir() + fsPath.slice(1);
-  } else if (!fsPath.startsWith('/')) {
+  } else if (!fsPath.startsWith("/")) {
     fsPath = resolve(getPwd(), fsPath);
   }
 
@@ -961,18 +1158,27 @@ function contextRemove(pathArg: string): void {
   closeDb();
 
   if (!detected) {
-    console.error(`${c.yellow}Path is not in any indexed collection: ${fsPath}${c.reset}`);
+    console.error(
+      `${c.yellow}Path is not in any indexed collection: ${fsPath}${c.reset}`,
+    );
     process.exit(1);
   }
 
-  const success = yamlRemoveContext(detected.collectionName, detected.relativePath);
+  const success = yamlRemoveContext(
+    detected.collectionName,
+    detected.relativePath,
+  );
 
   if (!success) {
-    console.error(`${c.yellow}No context found for: qmd://${detected.collectionName}/${detected.relativePath}${c.reset}`);
+    console.error(
+      `${c.yellow}No context found for: qmd://${detected.collectionName}/${detected.relativePath}${c.reset}`,
+    );
     process.exit(1);
   }
 
-  console.log(`${c.green}✓${c.reset} Removed context for: qmd://${detected.collectionName}/${detected.relativePath}`);
+  console.log(
+    `${c.green}✓${c.reset} Removed context for: qmd://${detected.collectionName}/${detected.relativePath}`,
+  );
 }
 
 /**
@@ -985,10 +1191,23 @@ function contextRemove(pathArg: string): void {
  * consistently. Returns `null` if the path could not be normalized — callers
  * fall back to whatever they had before.
  */
-function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string {
+function renderFullPath(
+  absolutePath: string,
+  cwd: string = process.cwd(),
+): string {
   let real: string;
-  try { real = realpathSync(absolutePath); } catch { real = absolutePath; }
-  const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
+  try {
+    real = realpathSync(absolutePath);
+  } catch {
+    real = absolutePath;
+  }
+  const cwdReal = (() => {
+    try {
+      return realpathSync(cwd);
+    } catch {
+      return cwd;
+    }
+  })();
   if (real === cwdReal) return "./";
   if (real.startsWith(cwdReal + "/")) {
     const rel = relativePath(cwdReal, real);
@@ -997,7 +1216,13 @@ function renderFullPath(absolutePath: string, cwd: string = process.cwd()): stri
   return real;
 }
 
-function getDocument(filename: string, fromLine?: number, maxLines?: number, lineNumbers?: boolean, fullPath: boolean = false): void {
+function getDocument(
+  filename: string,
+  fromLine?: number,
+  maxLines?: number,
+  lineNumbers?: boolean,
+  fullPath: boolean = false,
+): void {
   // Parse :line suffix from filename. Two forms:
   //   "file.md:100"     -> start at line 100
   //   "file.md:100:40"  -> start at line 100, read 40 lines
@@ -1021,7 +1246,9 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
   }
   if (fromLine !== undefined) fromLine = Math.max(1, fromLine);
 
-  const parsedIndexPath = isVirtualPath(inputPath) ? parseVirtualPath(inputPath) : null;
+  const parsedIndexPath = isVirtualPath(inputPath)
+    ? parseVirtualPath(inputPath)
+    : null;
   if (parsedIndexPath?.indexName) {
     setIndexName(parsedIndexPath.indexName);
     setConfigIndexName(parsedIndexPath.indexName);
@@ -1053,57 +1280,87 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
     }
 
     // Try exact match on collection + path
-    doc = db.prepare(`
+    doc = db
+      .prepare(
+        `
       SELECT d.collection as collectionName, d.path, content.doc as body
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE d.collection = ? AND d.path = ? AND d.active = 1
-    `).get(parsed.collectionName, parsed.path) as typeof doc;
+    `,
+      )
+      .get(parsed.collectionName, parsed.path) as typeof doc;
 
     if (!doc) {
       // Try fuzzy match by path ending
-      doc = db.prepare(`
+      doc = db
+        .prepare(
+          `
         SELECT d.collection as collectionName, d.path, content.doc as body
         FROM documents d
         JOIN content ON content.hash = d.hash
         WHERE d.collection = ? AND d.path LIKE ? AND d.active = 1
         LIMIT 1
-      `).get(parsed.collectionName, `%${parsed.path}`) as typeof doc;
+      `,
+        )
+        .get(parsed.collectionName, `%${parsed.path}`) as typeof doc;
     }
 
     virtualPath = inputPath;
   } else {
     // Try to interpret as collection/path format first (before filesystem path)
     // If path is relative (no / or ~ prefix), check if first component is a collection name
-    if (!inputPath.startsWith('/') && !inputPath.startsWith('~')) {
-      const parts = inputPath.split('/');
+    if (!inputPath.startsWith("/") && !inputPath.startsWith("~")) {
+      const parts = inputPath.split("/");
       if (parts.length >= 2) {
         const possibleCollection = parts[0];
-        const possiblePath = parts.slice(1).join('/');
+        const possiblePath = parts.slice(1).join("/");
 
         // Check if this collection exists
-        const collExists = possibleCollection ? db.prepare(`
+        const collExists = possibleCollection
+          ? db
+              .prepare(
+                `
           SELECT 1 FROM documents WHERE collection = ? AND active = 1 LIMIT 1
-        `).get(possibleCollection) : null;
+        `,
+              )
+              .get(possibleCollection)
+          : null;
 
         if (collExists) {
           // Try exact match on collection + path
-          doc = db.prepare(`
+          doc = db
+            .prepare(
+              `
             SELECT d.collection as collectionName, d.path, content.doc as body
             FROM documents d
             JOIN content ON content.hash = d.hash
             WHERE d.collection = ? AND d.path = ? AND d.active = 1
-          `).get(possibleCollection || "", possiblePath || "") as { collectionName: string; path: string; body: string } | null;
+          `,
+            )
+            .get(possibleCollection || "", possiblePath || "") as {
+            collectionName: string;
+            path: string;
+            body: string;
+          } | null;
 
           if (!doc) {
             // Try fuzzy match by path ending
-            doc = db.prepare(`
+            doc = db
+              .prepare(
+                `
               SELECT d.collection as collectionName, d.path, content.doc as body
               FROM documents d
               JOIN content ON content.hash = d.hash
               WHERE d.collection = ? AND d.path LIKE ? AND d.active = 1
               LIMIT 1
-            `).get(possibleCollection || "", `%${possiblePath}`) as { collectionName: string; path: string; body: string } | null;
+            `,
+              )
+              .get(possibleCollection || "", `%${possiblePath}`) as {
+              collectionName: string;
+              path: string;
+              body: string;
+            } | null;
           }
 
           if (doc) {
@@ -1119,9 +1376,9 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
       let fsPath = inputPath;
 
       // Expand ~ to home directory
-      if (fsPath.startsWith('~/')) {
+      if (fsPath.startsWith("~/")) {
         fsPath = homedir() + fsPath.slice(1);
-      } else if (!fsPath.startsWith('/')) {
+      } else if (!fsPath.startsWith("/")) {
         // Relative path - resolve from current directory
         fsPath = resolve(getPwd(), fsPath);
       }
@@ -1132,24 +1389,40 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
 
       if (detected) {
         // Found collection - query by collection name + relative path
-        doc = db.prepare(`
+        doc = db
+          .prepare(
+            `
           SELECT d.collection as collectionName, d.path, content.doc as body
           FROM documents d
           JOIN content ON content.hash = d.hash
           WHERE d.collection = ? AND d.path = ? AND d.active = 1
-        `).get(detected.collectionName, detected.relativePath) as { collectionName: string; path: string; body: string } | null;
+        `,
+          )
+          .get(detected.collectionName, detected.relativePath) as {
+          collectionName: string;
+          path: string;
+          body: string;
+        } | null;
       }
 
       // Fuzzy match by filename (last component of path)
       if (!doc) {
-        const filename = inputPath.split('/').pop() || inputPath;
-        doc = db.prepare(`
+        const filename = inputPath.split("/").pop() || inputPath;
+        doc = db
+          .prepare(
+            `
           SELECT d.collection as collectionName, d.path, content.doc as body
           FROM documents d
           JOIN content ON content.hash = d.hash
           WHERE d.path LIKE ? AND d.active = 1
           LIMIT 1
-        `).get(`%${filename}`) as { collectionName: string; path: string; body: string } | null;
+        `,
+          )
+          .get(`%${filename}`) as {
+          collectionName: string;
+          path: string;
+          body: string;
+        } | null;
       }
 
       if (doc) {
@@ -1172,11 +1445,15 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
 
   // Resolve the docid (first 6 chars of the content hash) so callers always
   // know what they retrieved and can cite it back to `get`/`multi-get`.
-  const hashRow = db.prepare(`
+  const hashRow = db
+    .prepare(
+      `
     SELECT d.hash as hash
     FROM documents d
     WHERE d.collection = ? AND d.path = ? AND d.active = 1
-  `).get(doc.collectionName, doc.path) as { hash: string } | null;
+  `,
+    )
+    .get(doc.collectionName, doc.path) as { hash: string } | null;
   const docid = hashRow?.hash ? hashRow.hash.slice(0, 6) : undefined;
   const canonicalPath = buildVirtualPath(doc.collectionName, doc.path);
 
@@ -1199,10 +1476,10 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
 
   // Apply line filtering if specified
   if (fromLine !== undefined || maxLines !== undefined) {
-    const lines = output.split('\n');
+    const lines = output.split("\n");
     const start = startLine - 1; // Convert to 0-indexed
     const end = maxLines !== undefined ? start + maxLines : lines.length;
-    output = lines.slice(start, end).join('\n');
+    output = lines.slice(start, end).join("\n");
   }
 
   // Line numbers are on by default (disable with --no-line-numbers) so the
@@ -1223,27 +1500,54 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
 }
 
 // Multi-get: fetch multiple documents by glob pattern or comma-separated list
-function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT_MULTI_GET_MAX_BYTES, format: OutputFormat = "cli", lineNumbers: boolean = true, fullPath: boolean = false): void {
+function multiGet(
+  pattern: string,
+  maxLines?: number,
+  maxBytes: number = DEFAULT_MULTI_GET_MAX_BYTES,
+  format: OutputFormat = "cli",
+  lineNumbers: boolean = true,
+  fullPath: boolean = false,
+): void {
   const db = getDb();
 
   // Check if it's a comma-separated list or a glob pattern
-  const isCommaSeparated = pattern.includes(',') && !pattern.includes('*') && !pattern.includes('?') && !pattern.includes('{');
+  const isCommaSeparated =
+    pattern.includes(",") &&
+    !pattern.includes("*") &&
+    !pattern.includes("?") &&
+    !pattern.includes("{");
 
-  let files: { filepath: string; displayPath: string; bodyLength: number; collection?: string; path?: string }[];
+  let files: {
+    filepath: string;
+    displayPath: string;
+    bodyLength: number;
+    collection?: string;
+    path?: string;
+  }[];
 
   if (isCommaSeparated) {
     // Comma-separated list of files (can be virtual paths or relative paths)
-    const names = pattern.split(',').map(s => s.trim()).filter(Boolean);
+    const names = pattern
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     files = [];
     for (const name of names) {
-      let doc: { virtual_path: string; body_length: number; collection: string; path: string } | null = null;
+      let doc: {
+        virtual_path: string;
+        body_length: number;
+        collection: string;
+        path: string;
+      } | null = null;
 
       // Handle virtual paths
       if (isVirtualPath(name)) {
         const parsed = parseVirtualPath(name);
         if (parsed) {
           // Try exact match on collection + path
-          doc = db.prepare(`
+          doc = db
+            .prepare(
+              `
             SELECT
               'qmd://' || d.collection || '/' || d.path as virtual_path,
               LENGTH(content.doc) as body_length,
@@ -1252,11 +1556,15 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
             FROM documents d
             JOIN content ON content.hash = d.hash
             WHERE d.collection = ? AND d.path = ? AND d.active = 1
-          `).get(parsed.collectionName, parsed.path) as typeof doc;
+          `,
+            )
+            .get(parsed.collectionName, parsed.path) as typeof doc;
         }
       } else {
         // Try exact match on path
-        doc = db.prepare(`
+        doc = db
+          .prepare(
+            `
           SELECT
             'qmd://' || d.collection || '/' || d.path as virtual_path,
             LENGTH(content.doc) as body_length,
@@ -1266,11 +1574,20 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
           JOIN content ON content.hash = d.hash
           WHERE d.path = ? AND d.active = 1
           LIMIT 1
-        `).get(name) as { virtual_path: string; body_length: number; collection: string; path: string } | null;
+        `,
+          )
+          .get(name) as {
+          virtual_path: string;
+          body_length: number;
+          collection: string;
+          path: string;
+        } | null;
 
         // Try suffix match
         if (!doc) {
-          doc = db.prepare(`
+          doc = db
+            .prepare(
+              `
             SELECT
               'qmd://' || d.collection || '/' || d.path as virtual_path,
               LENGTH(content.doc) as body_length,
@@ -1280,7 +1597,14 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
             JOIN content ON content.hash = d.hash
             WHERE d.path LIKE ? AND d.active = 1
             LIMIT 1
-          `).get(`%${name}`) as { virtual_path: string; body_length: number; collection: string; path: string } | null;
+          `,
+            )
+            .get(`%${name}`) as {
+            virtual_path: string;
+            body_length: number;
+            collection: string;
+            path: string;
+          } | null;
         }
       }
 
@@ -1290,7 +1614,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
           displayPath: doc.virtual_path,
           bodyLength: doc.body_length,
           collection: doc.collection,
-          path: doc.path
+          path: doc.path,
         });
       } else {
         console.error(`File not found: ${name}`);
@@ -1298,10 +1622,10 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     }
   } else {
     // Glob pattern - matchFilesByGlob now returns virtual paths
-    files = matchFilesByGlob(db, pattern).map(f => ({
+    files = matchFilesByGlob(db, pattern).map((f) => ({
       ...f,
-      collection: undefined,  // Will be fetched later if needed
-      path: undefined
+      collection: undefined, // Will be fetched later if needed
+      path: undefined,
     }));
     if (files.length === 0) {
       console.error(`No files matched pattern: ${pattern}`);
@@ -1311,7 +1635,17 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
   }
 
   // Collect results for structured output
-  const results: { file: string; displayPath: string; fsPath?: string; docid?: string; title: string; body: string; context: string | null; skipped: boolean; skipReason?: string }[] = [];
+  const results: {
+    file: string;
+    displayPath: string;
+    fsPath?: string;
+    docid?: string;
+    title: string;
+    body: string;
+    context: string | null;
+    skipped: boolean;
+    skipReason?: string;
+  }[] = [];
 
   for (const file of files) {
     // Parse virtual path to get collection info if not already available
@@ -1327,14 +1661,22 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     }
 
     // Get context using collection-scoped function
-    const context = collection && path ? getContextForPath(db, collection, path) : null;
+    const context =
+      collection && path ? getContextForPath(db, collection, path) : null;
 
     // Resolve docid (first 6 chars of content hash) so every entry can be cited.
-    const docidRow = collection && path ? db.prepare(`
+    const docidRow =
+      collection && path
+        ? (db
+            .prepare(
+              `
       SELECT d.hash as hash
       FROM documents d
       WHERE d.collection = ? AND d.path = ? AND d.active = 1
-    `).get(collection, path) as { hash: string } | null : null;
+    `,
+            )
+            .get(collection, path) as { hash: string } | null)
+        : null;
     const docid = docidRow?.hash ? docidRow.hash.slice(0, 6) : undefined;
 
     // --full-path: resolve the on-disk path when it exists (else fall back).
@@ -1353,7 +1695,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
         displayPath: file.displayPath,
         fsPath,
         docid,
-        title: file.displayPath.split('/').pop() || file.displayPath,
+        title: file.displayPath.split("/").pop() || file.displayPath,
         body: "",
         context,
         skipped: true,
@@ -1365,12 +1707,16 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     // Fetch document content using collection and path
     if (!collection || !path) continue;
 
-    const doc = db.prepare(`
+    const doc = db
+      .prepare(
+        `
       SELECT content.doc as body, d.title
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE d.collection = ? AND d.path = ? AND d.active = 1
-    `).get(collection, path) as { body: string; title: string } | null;
+    `,
+      )
+      .get(collection, path) as { body: string; title: string } | null;
 
     if (!doc) continue;
 
@@ -1378,8 +1724,8 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
 
     // Apply line limit if specified
     if (maxLines !== undefined) {
-      const lines = body.split('\n');
-      body = lines.slice(0, maxLines).join('\n');
+      const lines = body.split("\n");
+      body = lines.slice(0, maxLines).join("\n");
       if (lines.length > maxLines) {
         body += `\n\n[... truncated ${lines.length - maxLines} more lines]`;
       }
@@ -1395,7 +1741,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       displayPath: file.displayPath,
       fsPath,
       docid,
-      title: doc.title || file.displayPath.split('/').pop() || file.displayPath,
+      title: doc.title || file.displayPath.split("/").pop() || file.displayPath,
       body,
       context,
       skipped: false,
@@ -1406,19 +1752,23 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
 
   // --full-path replaces the qmd:// path + docid with the on-disk path (when it
   // resolved). Per result: pick the identifier and whether to show the docid.
-  const identOf = (r: typeof results[number]): string => (fullPath && r.fsPath) ? r.fsPath : r.displayPath;
-  const docidOf = (r: typeof results[number]): string | undefined => (fullPath && r.fsPath) ? undefined : r.docid;
+  const identOf = (r: (typeof results)[number]): string =>
+    fullPath && r.fsPath ? r.fsPath : r.displayPath;
+  const docidOf = (r: (typeof results)[number]): string | undefined =>
+    fullPath && r.fsPath ? undefined : r.docid;
 
   // Output based on format
   if (format === "json") {
-    const output = results.map(r => {
+    const output = results.map((r) => {
       const docidVal = docidOf(r);
       return {
         file: identOf(r),
         ...(docidVal && { docid: `#${docidVal}` }),
         title: r.title,
         ...(r.context && { context: r.context }),
-        ...(r.skipped ? { skipped: true, reason: r.skipReason } : { body: r.body }),
+        ...(r.skipped
+          ? { skipped: true, reason: r.skipReason }
+          : { body: r.body }),
       };
     });
     console.log(JSON.stringify(output, null, 2));
@@ -1434,7 +1784,18 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     console.log("docid,file,title,context,skipped,body");
     for (const r of results) {
       const docidVal = docidOf(r);
-      console.log([docidVal ? `#${docidVal}` : "", identOf(r), r.title, r.context, r.skipped ? "true" : "false", r.skipped ? r.skipReason : r.body].map(escapeField).join(","));
+      console.log(
+        [
+          docidVal ? `#${docidVal}` : "",
+          identOf(r),
+          r.title,
+          r.context,
+          r.skipped ? "true" : "false",
+          r.skipped ? r.skipReason : r.body,
+        ]
+          .map(escapeField)
+          .join(","),
+      );
     }
   } else if (format === "files") {
     for (const r of results) {
@@ -1449,7 +1810,8 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       const docidVal = docidOf(r);
       console.log(`## ${identOf(r)}\n`);
       if (docidVal) console.log(`**docid:** \`#${docidVal}\`\n`);
-      if (r.title && r.title !== r.displayPath) console.log(`**Title:** ${r.title}\n`);
+      if (r.title && r.title !== r.displayPath)
+        console.log(`**Title:** ${r.title}\n`);
       if (r.context) console.log(`**Context:** ${r.context}\n`);
       if (r.skipped) {
         console.log(`> ${r.skipReason}\n`);
@@ -1468,7 +1830,8 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       console.log(`  <document${docidAttr}>`);
       console.log(`    <file>${escapeXml(identOf(r))}</file>`);
       console.log(`    <title>${escapeXml(r.title)}</title>`);
-      if (r.context) console.log(`    <context>${escapeXml(r.context)}</context>`);
+      if (r.context)
+        console.log(`    <context>${escapeXml(r.context)}</context>`);
       if (r.skipped) {
         console.log(`    <skipped>true</skipped>`);
         console.log(`    <reason>${escapeXml(r.skipReason || "")}</reason>`);
@@ -1483,9 +1846,9 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     for (const r of results) {
       const docidVal = docidOf(r);
       const id = docidVal ? `  #${docidVal}` : "";
-      console.log(`\n${'='.repeat(60)}`);
+      console.log(`\n${"=".repeat(60)}`);
       console.log(`File: ${identOf(r)}${id}`);
-      console.log(`${'='.repeat(60)}\n`);
+      console.log(`${"=".repeat(60)}\n`);
 
       if (r.skipped) {
         console.log(`[SKIPPED: ${r.skipReason}]`);
@@ -1509,28 +1872,36 @@ function listFiles(pathArg?: string): void {
     const yamlCollections = yamlListCollections();
 
     if (yamlCollections.length === 0) {
-      console.log("No collections found. Run 'qmd collection add .' to index files.");
+      console.log(
+        "No collections found. Run 'qmd collection add .' to index files.",
+      );
       closeDb();
       return;
     }
 
     // Get file counts from database for each collection
-    const collections = yamlCollections.map(coll => {
-      const stats = db.prepare(`
+    const collections = yamlCollections.map((coll) => {
+      const stats = db
+        .prepare(
+          `
         SELECT COUNT(*) as file_count
         FROM documents d
         WHERE d.collection = ? AND d.active = 1
-      `).get(coll.name) as { file_count: number } | null;
+      `,
+        )
+        .get(coll.name) as { file_count: number } | null;
 
       return {
         name: coll.name,
-        file_count: stats?.file_count || 0
+        file_count: stats?.file_count || 0,
       };
     });
 
     console.log(`${c.bold}Collections:${c.reset}\n`);
     for (const coll of collections) {
-      console.log(`  ${c.dim}qmd://${c.reset}${c.cyan}${coll.name}/${c.reset}  ${c.dim}(${coll.file_count} files)${c.reset}`);
+      console.log(
+        `  ${c.dim}qmd://${c.reset}${c.cyan}${coll.name}/${c.reset}  ${c.dim}(${coll.file_count} files)${c.reset}`,
+      );
     }
     closeDb();
     return;
@@ -1540,18 +1911,22 @@ function listFiles(pathArg?: string): void {
   let collectionName: string;
   let pathPrefix: string | null = null;
 
-  const afterScheme = pathArg.startsWith('qmd://') ? pathArg.slice('qmd://'.length) : null;
-  if (afterScheme !== null && afterScheme.startsWith('/')) {
+  const afterScheme = pathArg.startsWith("qmd://")
+    ? pathArg.slice("qmd://".length)
+    : null;
+  if (afterScheme !== null && afterScheme.startsWith("/")) {
     // Absolute-path collection: qmd:///Users/foo/bar — normalizeVirtualPath would corrupt
     // this by stripping all leading slashes, so bypass parseVirtualPath entirely.
-    const normalized = afterScheme.replace(/\/$/, '');
+    const normalized = afterScheme.replace(/\/$/, "");
     const allColls = yamlListCollections();
     const match = allColls
-      .filter(c => normalized === c.name || normalized.startsWith(c.name + '/'))
+      .filter(
+        (c) => normalized === c.name || normalized.startsWith(c.name + "/"),
+      )
       .sort((a, b) => b.name.length - a.name.length)[0];
     if (match) {
       collectionName = match.name;
-      const rest = normalized.slice(match.name.length).replace(/^\//, '');
+      const rest = normalized.slice(match.name.length).replace(/^\//, "");
       pathPrefix = rest || null;
     } else {
       // Preserve the historical qmd:////collection/path alias behavior for normal
@@ -1575,26 +1950,28 @@ function listFiles(pathArg?: string): void {
     }
     collectionName = parsed.collectionName;
     pathPrefix = parsed.path;
-  } else if (pathArg.startsWith('/')) {
+  } else if (pathArg.startsWith("/")) {
     // Raw absolute filesystem path — longest-prefix match against collection names
-    const normalized = pathArg.replace(/\/$/, '');
+    const normalized = pathArg.replace(/\/$/, "");
     const allColls = yamlListCollections();
     const match = allColls
-      .filter(c => normalized === c.name || normalized.startsWith(c.name + '/'))
+      .filter(
+        (c) => normalized === c.name || normalized.startsWith(c.name + "/"),
+      )
       .sort((a, b) => b.name.length - a.name.length)[0];
     if (match) {
       collectionName = match.name;
-      const rest = normalized.slice(match.name.length).replace(/^\//, '');
+      const rest = normalized.slice(match.name.length).replace(/^\//, "");
       pathPrefix = rest || null;
     } else {
       collectionName = normalized;
     }
   } else {
     // Short collection name or name/path
-    const parts = pathArg.split('/');
-    collectionName = parts[0] || '';
+    const parts = pathArg.split("/");
+    collectionName = parts[0] || "";
     if (parts.length > 1) {
-      pathPrefix = parts.slice(1).join('/');
+      pathPrefix = parts.slice(1).join("/");
     }
   }
 
@@ -1633,7 +2010,12 @@ function listFiles(pathArg?: string): void {
     params = [coll.name];
   }
 
-  const files = db.prepare(query).all(...params) as { path: string; title: string; modified_at: string; size: number }[];
+  const files = db.prepare(query).all(...params) as {
+    path: string;
+    title: string;
+    modified_at: string;
+    size: number;
+  }[];
 
   if (files.length === 0) {
     if (pathPrefix) {
@@ -1646,7 +2028,7 @@ function listFiles(pathArg?: string): void {
   }
 
   // Calculate max widths for alignment
-  const maxSize = Math.max(...files.map(f => formatBytes(f.size).length));
+  const maxSize = Math.max(...files.map((f) => formatBytes(f.size).length));
 
   // Output in ls -l style
   for (const file of files) {
@@ -1655,7 +2037,9 @@ function listFiles(pathArg?: string): void {
     const timeStr = formatLsTime(date);
 
     // Dim the qmd:// prefix, highlight the filename
-    console.log(`${sizeStr}  ${timeStr}  ${c.dim}qmd://${collectionName}/${c.reset}${c.cyan}${file.path}${c.reset}`);
+    console.log(
+      `${sizeStr}  ${timeStr}  ${c.dim}qmd://${collectionName}/${c.reset}${c.cyan}${file.path}${c.reset}`,
+    );
   }
 
   closeDb();
@@ -1666,17 +2050,30 @@ function formatLsTime(date: Date): string {
   const now = new Date();
   const sixMonthsAgo = new Date(now.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
 
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
   const month = months[date.getMonth()];
-  const day = date.getDate().toString().padStart(2, ' ');
+  const day = date.getDate().toString().padStart(2, " ");
 
   // If file is older than 6 months, show year instead of time
   if (date < sixMonthsAgo) {
     const year = date.getFullYear();
     return `${month} ${day}  ${year}`;
   } else {
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
+    const hours = date.getHours().toString().padStart(2, "0");
+    const minutes = date.getMinutes().toString().padStart(2, "0");
     return `${month} ${day} ${hours}:${minutes}`;
   }
 }
@@ -1687,7 +2084,9 @@ function collectionList(): void {
   const collections = listCollections(db);
 
   if (collections.length === 0) {
-    console.log("No collections found. Run 'qmd collection add .' to create one.");
+    console.log(
+      "No collections found. Run 'qmd collection add .' to create one.",
+    );
     closeDb();
     return;
   }
@@ -1695,18 +2094,24 @@ function collectionList(): void {
   console.log(`${c.bold}Collections (${collections.length}):${c.reset}\n`);
 
   for (const coll of collections) {
-    const updatedAt = coll.last_modified ? new Date(coll.last_modified) : new Date();
+    const updatedAt = coll.last_modified
+      ? new Date(coll.last_modified)
+      : new Date();
     const timeAgo = formatTimeAgo(updatedAt);
-    
+
     // Get YAML config to check includeByDefault
     const yamlColl = getCollectionFromYaml(coll.name);
     const excluded = yamlColl?.includeByDefault === false;
-    const excludeTag = excluded ? ` ${c.yellow}[excluded]${c.reset}` : '';
+    const excludeTag = excluded ? ` ${c.yellow}[excluded]${c.reset}` : "";
 
-    console.log(`${c.cyan}${coll.name}${c.reset} ${c.dim}(qmd://${coll.name}/)${c.reset}${excludeTag}`);
+    console.log(
+      `${c.cyan}${coll.name}${c.reset} ${c.dim}(qmd://${coll.name}/)${c.reset}${excludeTag}`,
+    );
     console.log(`  ${c.dim}Pattern:${c.reset}  ${coll.glob_pattern}`);
     if (yamlColl?.ignore?.length) {
-      console.log(`  ${c.dim}Ignore:${c.reset}   ${yamlColl.ignore.join(', ')}`);
+      console.log(
+        `  ${c.dim}Ignore:${c.reset}   ${yamlColl.ignore.join(", ")}`,
+      );
     }
     console.log(`  ${c.dim}Files:${c.reset}    ${coll.active_count}`);
     console.log(`  ${c.dim}Updated:${c.reset}  ${timeAgo}`);
@@ -1716,31 +2121,45 @@ function collectionList(): void {
   closeDb();
 }
 
-async function collectionAdd(pwd: string, globPattern: string, name?: string): Promise<void> {
+async function collectionAdd(
+  pwd: string,
+  globPattern: string,
+  name?: string,
+): Promise<void> {
   // If name not provided, generate from pwd basename
   let collName = name;
   if (!collName) {
-    const parts = pwd.split('/').filter(Boolean);
-    collName = parts[parts.length - 1] || 'root';
+    const parts = pwd.split("/").filter(Boolean);
+    collName = parts[parts.length - 1] || "root";
   }
 
   // Check if collection with this name already exists in YAML
   const existing = getCollectionFromYaml(collName);
   if (existing) {
-    console.error(`${c.yellow}Collection '${collName}' already exists.${c.reset}`);
+    console.error(
+      `${c.yellow}Collection '${collName}' already exists.${c.reset}`,
+    );
     console.error(`Use a different name with --name <name>`);
     process.exit(1);
   }
 
   // Check if a collection with this pwd+glob already exists in YAML
   const allCollections = yamlListCollections();
-  const existingPwdGlob = allCollections.find(c => c.path === pwd && c.pattern === globPattern);
+  const existingPwdGlob = allCollections.find(
+    (c) => c.path === pwd && c.pattern === globPattern,
+  );
 
   if (existingPwdGlob) {
-    console.error(`${c.yellow}A collection already exists for this path and pattern:${c.reset}`);
-    console.error(`  Name: ${existingPwdGlob.name} (qmd://${existingPwdGlob.name}/)`);
+    console.error(
+      `${c.yellow}A collection already exists for this path and pattern:${c.reset}`,
+    );
+    console.error(
+      `  Name: ${existingPwdGlob.name} (qmd://${existingPwdGlob.name}/)`,
+    );
     console.error(`  Pattern: ${globPattern}`);
-    console.error(`\nUse 'qmd update' to re-index it, or remove it first with 'qmd collection remove ${existingPwdGlob.name}'`);
+    console.error(
+      `\nUse 'qmd update' to re-index it, or remove it first with 'qmd collection remove ${existingPwdGlob.name}'`,
+    );
     process.exit(1);
   }
 
@@ -1753,7 +2172,9 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
   console.log(`Creating collection '${collName}'...`);
   const newColl = getCollectionFromYaml(collName);
   await indexFiles(pwd, globPattern, collName, false, newColl?.ignore);
-  console.log(`${c.green}✓${c.reset} Collection '${collName}' created successfully`);
+  console.log(
+    `${c.green}✓${c.reset} Collection '${collName}' created successfully`,
+  );
 }
 
 function collectionRemove(name: string): void {
@@ -1790,8 +2211,12 @@ function collectionRename(oldName: string, newName: string): void {
   // Check if new name already exists in YAML
   const existing = getCollectionFromYaml(newName);
   if (existing) {
-    console.error(`${c.yellow}Collection name already exists: ${newName}${c.reset}`);
-    console.error(`Choose a different name or remove the existing collection first.`);
+    console.error(
+      `${c.yellow}Collection name already exists: ${newName}${c.reset}`,
+    );
+    console.error(
+      `Choose a different name or remove the existing collection first.`,
+    );
     process.exit(1);
   }
 
@@ -1801,29 +2226,48 @@ function collectionRename(oldName: string, newName: string): void {
   yamlRenameCollectionFn(oldName, newName);
   closeDb();
 
-  console.log(`${c.green}✓${c.reset} Renamed collection '${oldName}' to '${newName}'`);
-  console.log(`  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`);
+  console.log(
+    `${c.green}✓${c.reset} Renamed collection '${oldName}' to '${newName}'`,
+  );
+  console.log(
+    `  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`,
+  );
 }
 
-async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false, ignorePatterns?: string[]): Promise<void> {
+async function indexFiles(
+  pwd?: string,
+  globPattern: string = DEFAULT_GLOB,
+  collectionName?: string,
+  suppressEmbedNotice: boolean = false,
+  ignorePatterns?: string[],
+): Promise<void> {
   const db = getDb();
   const resolvedPwd = pwd || getPwd();
   const now = new Date().toISOString();
-  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+  const excludeDirs = [
+    "node_modules",
+    ".git",
+    ".cache",
+    "vendor",
+    "dist",
+    "build",
+  ];
 
   // Clear Ollama cache on index
   clearCache(db);
 
   // Collection name must be provided (from YAML)
   if (!collectionName) {
-    throw new Error("Collection name is required. Collections must be defined in ~/.config/qmd/index.yml");
+    throw new Error(
+      "Collection name is required. Collections must be defined in ~/.config/qmd/index.yml",
+    );
   }
 
   console.log(`Collection: ${resolvedPwd} (${globPattern})`);
 
   progress.indeterminate();
   const allIgnore = [
-    ...excludeDirs.map(d => `**/${d}/**`),
+    ...excludeDirs.map((d) => `**/${d}/**`),
     ...(ignorePatterns || []),
   ];
   const allFiles: string[] = await fastGlob(globPattern, {
@@ -1834,9 +2278,9 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     ignore: allIgnore,
   });
   // Filter hidden files/folders (dot: false handles top-level but not nested)
-  const files = allFiles.filter(file => {
+  const files = allFiles.filter((file) => {
     const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
+    return !parts.some((part) => part.startsWith("."));
   });
 
   const total = files.length;
@@ -1847,14 +2291,17 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Continue so the deactivation pass can mark previously indexed docs as inactive.
   }
 
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0,
+    updated = 0,
+    unchanged = 0,
+    processed = 0;
   const seenPaths = new Set<string>();
   const startTime = Date.now();
 
   for (const relativeFile of files) {
     const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
     // Store the literal relative path — handelize() is NOT applied at index time.
-    const path = relativeFile.replace(/\\/g, '/');
+    const path = relativeFile.replace(/\\/g, "/");
     seenPaths.add(path);
 
     let content: string;
@@ -1892,8 +2339,13 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
         // Content changed - insert new content hash and update document
         insertContent(db, hash, content, now);
         const stat = statSync(filepath);
-        updateDocument(db, existing.id, title, hash,
-          stat ? new Date(stat.mtime).toISOString() : now);
+        updateDocument(
+          db,
+          existing.id,
+          title,
+          hash,
+          stat ? new Date(stat.mtime).toISOString() : now,
+        );
         updated++;
       }
     } else {
@@ -1901,9 +2353,15 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       indexed++;
       insertContent(db, hash, content, now);
       const stat = statSync(filepath);
-      insertDocument(db, collectionName, path, title, hash,
+      insertDocument(
+        db,
+        collectionName,
+        path,
+        title,
+        hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
-        stat ? new Date(stat.mtime).toISOString() : now);
+        stat ? new Date(stat.mtime).toISOString() : now,
+      );
     }
 
     processed++;
@@ -1912,7 +2370,8 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     const rate = processed / elapsed;
     const remaining = (total - processed) / rate;
     const eta = processed > 2 ? ` ETA: ${formatETA(remaining)}` : "";
-    if (isTTY) process.stderr.write(`\rIndexing: ${processed}/${total}${eta}        `);
+    if (isTTY)
+      process.stderr.write(`\rIndexing: ${processed}/${total}${eta}        `);
   }
 
   // Deactivate documents in this collection that no longer exist
@@ -1932,13 +2391,17 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const needsEmbedding = getHashesNeedingEmbedding(db);
 
   progress.clear();
-  console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
+  console.log(
+    `\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`,
+  );
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
 
   if (needsEmbedding > 0 && !suppressEmbedNotice) {
-    console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
+    console.log(
+      `\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`,
+    );
   }
 
   closeDb();
@@ -1951,7 +2414,10 @@ function renderProgressBar(percent: number, width: number = 30): string {
   return bar;
 }
 
-function parseEmbedBatchOption(name: string, value: unknown): number | undefined {
+function parseEmbedBatchOption(
+  name: string,
+  value: unknown,
+): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -1967,7 +2433,11 @@ function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   throw new Error(`--chunk-strategy must be "auto" or "regex" (got "${s}")`);
 }
 
-function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
+function ensureModelsConfiguredForCli(): {
+  embed: string;
+  generate: string;
+  rerank: string;
+} {
   const backend = process.env.QMD_LLM_BACKEND || "api";
   if (backend === "api") {
     return {
@@ -1980,7 +2450,11 @@ function ensureModelsConfiguredForCli(): { embed: string; generate: string; rera
     const config = loadConfig();
     const models = resolveModels(config.models);
     const current = config.models ?? {};
-    if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
+    if (
+      current.embed !== models.embed ||
+      current.generate !== models.generate ||
+      current.rerank !== models.rerank
+    ) {
       saveConfig({
         ...config,
         models: {
@@ -2009,35 +2483,59 @@ export function resolveRerankModelForCli(): string {
   return ensureModelsConfiguredForCli().rerank;
 }
 
-function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
+function resolveModelsForCli(): {
+  embed: string;
+  generate: string;
+  rerank: string;
+} {
   return ensureModelsConfiguredForCli();
 }
 
 async function vectorIndex(
   model: string = resolveEmbedModelForCli(),
   force: boolean = false,
-  batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string },
+  batchOptions?: {
+    maxDocsPerBatch?: number;
+    maxBatchBytes?: number;
+    chunkStrategy?: ChunkStrategy;
+    collection?: string;
+  },
 ): Promise<void> {
   const storeInstance = getStore();
   const db = storeInstance.db;
 
   if (force) {
-    console.log(`${c.yellow}Force re-indexing: clearing all vectors...${c.reset}`);
+    console.log(
+      `${c.yellow}Force re-indexing: clearing all vectors...${c.reset}`,
+    );
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection, model);
+  const hashesToEmbed = getHashesNeedingEmbedding(
+    db,
+    batchOptions?.collection,
+    model,
+  );
   if (hashesToEmbed === 0 && !force) {
-    console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
+    console.log(
+      `${c.green}✓ All content hashes already have embeddings.${c.reset}`,
+    );
     closeDb();
     return;
   }
 
   console.log(`${c.dim}Model: ${shortModelName(model)}${c.reset}\n`);
-  if (batchOptions?.maxDocsPerBatch !== undefined || batchOptions?.maxBatchBytes !== undefined) {
-    const maxDocsPerBatch = batchOptions.maxDocsPerBatch ?? DEFAULT_EMBED_MAX_DOCS_PER_BATCH;
-    const maxBatchBytes = batchOptions.maxBatchBytes ?? DEFAULT_EMBED_MAX_BATCH_BYTES;
-    console.log(`${c.dim}Batch: ${maxDocsPerBatch} docs / ${formatBytes(maxBatchBytes)}${c.reset}\n`);
+  if (
+    batchOptions?.maxDocsPerBatch !== undefined ||
+    batchOptions?.maxBatchBytes !== undefined
+  ) {
+    const maxDocsPerBatch =
+      batchOptions.maxDocsPerBatch ?? DEFAULT_EMBED_MAX_DOCS_PER_BATCH;
+    const maxBatchBytes =
+      batchOptions.maxBatchBytes ?? DEFAULT_EMBED_MAX_BATCH_BYTES;
+    console.log(
+      `${c.dim}Batch: ${maxDocsPerBatch} docs / ${formatBytes(maxBatchBytes)}${c.reset}\n`,
+    );
   }
   cursor.hide();
   progress.indeterminate();
@@ -2058,23 +2556,37 @@ async function vectorIndex(
       // chunksEmbedded/totalChunks makes the percent look wrong when a few
       // large documents remain. Show chunks as a count and label the byte
       // percentage explicitly as input progress.
-      const percent = Math.min(100, (info.bytesProcessed / info.totalBytes) * 100);
+      const percent = Math.min(
+        100,
+        (info.bytesProcessed / info.totalBytes) * 100,
+      );
       progress.set(percent);
 
       const elapsed = (Date.now() - startTime) / 1000;
       const bytesPerSec = elapsed > 0 ? info.bytesProcessed / elapsed : 0;
       const remainingBytes = Math.max(0, info.totalBytes - info.bytesProcessed);
-      const etaSec = bytesPerSec > 0 ? remainingBytes / bytesPerSec : Number.POSITIVE_INFINITY;
+      const etaSec =
+        bytesPerSec > 0
+          ? remainingBytes / bytesPerSec
+          : Number.POSITIVE_INFINITY;
 
       const bar = renderProgressBar(percent);
       const percentStr = percent.toFixed(0).padStart(3);
-      const throughput = bytesPerSec > 0 ? `${formatBytes(bytesPerSec)}/s` : ".../s";
-      const eta = elapsed > 2 && Number.isFinite(etaSec) ? formatETA(etaSec) : "...";
+      const throughput =
+        bytesPerSec > 0 ? `${formatBytes(bytesPerSec)}/s` : ".../s";
+      const eta =
+        elapsed > 2 && Number.isFinite(etaSec) ? formatETA(etaSec) : "...";
       const inputStr = `${formatBytes(info.bytesProcessed)}/${formatBytes(info.totalBytes)} input`;
       const chunkStr = `${formatCount(info.chunksEmbedded)} chunks`;
-      const errStr = info.errors > 0 ? ` ${c.yellow}${formatCount(info.errors)} err${c.reset}` : "";
+      const errStr =
+        info.errors > 0
+          ? ` ${c.yellow}${formatCount(info.errors)} err${c.reset}`
+          : "";
 
-      if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}% input${c.reset} ${c.dim}${chunkStr}${errStr} · ${inputStr} · ${throughput} · ETA ${eta}${c.reset}   `);
+      if (isTTY)
+        process.stderr.write(
+          `\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}% input${c.reset} ${c.dim}${chunkStr}${errStr} · ${inputStr} · ${throughput} · ETA ${eta}${c.reset}   `,
+        );
     },
   });
 
@@ -2086,15 +2598,25 @@ async function vectorIndex(
   if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
     console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
   } else {
-    console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
-    console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksEmbedded}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
+    console.log(
+      `\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `,
+    );
+    console.log(
+      `\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksEmbedded}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`,
+    );
     if (result.errors > 0) {
-      console.log(`${c.yellow}⚠ ${formatCount(result.errors)} chunks still failed after retries${c.reset}`);
+      console.log(
+        `${c.yellow}⚠ ${formatCount(result.errors)} chunks still failed after retries${c.reset}`,
+      );
       for (const failure of (result.failures ?? []).slice(0, 8)) {
-        console.log(`  ${c.dim}${failure.path}#${failure.seq} (${failure.attempts} attempts): ${failure.reason}${c.reset}`);
+        console.log(
+          `  ${c.dim}${failure.path}#${failure.seq} (${failure.attempts} attempts): ${failure.reason}${c.reset}`,
+        );
       }
       if ((result.failures?.length ?? 0) > 8) {
-        console.log(`  ${c.dim}...and ${formatCount((result.failures?.length ?? 0) - 8)} more${c.reset}`);
+        console.log(
+          `  ${c.dim}...and ${formatCount((result.failures?.length ?? 0) - 8)} more${c.reset}`,
+        );
       }
     }
   }
@@ -2105,18 +2627,18 @@ async function vectorIndex(
 // Sanitize a term for FTS5: remove punctuation except apostrophes
 function sanitizeFTS5Term(term: string): string {
   // Remove all non-alphanumeric except apostrophes (for contractions like "don't")
-  return term.replace(/[^\w']/g, '').trim();
+  return term.replace(/[^\w']/g, "").trim();
 }
 
 // Build FTS5 query: phrase-aware with fallback to individual terms
 function buildFTS5Query(query: string): string {
   // Sanitize the full query for phrase matching
-  const sanitizedQuery = query.replace(/[^\w\s']/g, '').trim();
+  const sanitizedQuery = query.replace(/[^\w\s']/g, "").trim();
 
   const terms = query
     .split(/\s+/)
     .map(sanitizeFTS5Term)
-    .filter(term => term.length >= 2); // Skip single chars and empty
+    .filter((term) => term.length >= 2); // Skip single chars and empty
 
   if (terms.length === 0) return "";
   if (terms.length === 1) return `"${terms[0]!.replace(/"/g, '""')}"`;
@@ -2124,11 +2646,11 @@ function buildFTS5Query(query: string): string {
   // Strategy: exact phrase OR proximity match OR individual terms
   // Exact phrase matches rank highest, then close proximity, then any term
   const phrase = `"${sanitizedQuery.replace(/"/g, '""')}"`;
-  const quotedTerms = terms.map(t => `"${t.replace(/"/g, '""')}"`);
+  const quotedTerms = terms.map((t) => `"${t.replace(/"/g, '""')}"`);
 
   // FTS5 NEAR syntax: NEAR(term1 term2, distance)
-  const nearPhrase = `NEAR(${quotedTerms.join(' ')}, 10)`;
-  const orTerms = quotedTerms.join(' OR ');
+  const nearPhrase = `NEAR(${quotedTerms.join(" ")}, 10)`;
+  const orTerms = quotedTerms.join(" OR ");
 
   // Exact phrase > proximity > any term
   return `(${phrase}) OR (${nearPhrase}) OR (${orTerms})`;
@@ -2150,24 +2672,30 @@ type OutputOptions = {
   limit: number;
   minScore: number;
   all?: boolean;
-  collection?: string | string[];  // Filter by collection name(s)
+  collection?: string | string[]; // Filter by collection name(s)
   lineNumbers?: boolean; // Add line numbers to output
-  explain?: boolean;     // Include retrieval score traces (query only)
-  context?: string;      // Optional context for query expansion
-  candidateLimit?: number;  // Max candidates to rerank (default: 40)
-  intent?: string;       // Domain intent for disambiguation
-  skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
-  chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
-  fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
+  explain?: boolean; // Include retrieval score traces (query only)
+  context?: string; // Optional context for query expansion
+  candidateLimit?: number; // Max candidates to rerank (default: 40)
+  intent?: string; // Domain intent for disambiguation
+  skipRerank?: boolean; // Skip LLM reranking, use RRF scores only
+  chunkStrategy?: ChunkStrategy; // "auto" (default) or "regex"
+  fullPath?: boolean; // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
 function highlightTerms(text: string, query: string): string {
   if (!useColor) return text;
-  const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3);
   let result = text;
   for (const term of terms) {
-    const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const regex = new RegExp(
+      `(${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
+      "gi",
+    );
     result = result.replace(regex, `${c.yellow}${c.bold}$1${c.reset}`);
   }
   return result;
@@ -2190,7 +2718,7 @@ function formatExplainNumber(value: number): string {
 function shortPath(dirpath: string): string {
   const home = homedir();
   if (dirpath.startsWith(home)) {
-    return '~' + dirpath.slice(home.length);
+    return "~" + dirpath.slice(home.length);
   }
   return dirpath;
 }
@@ -2198,7 +2726,10 @@ function shortPath(dirpath: string): string {
 type EmptySearchReason = "no_results" | "min_score";
 
 // Emit format-safe empty output for search commands.
-function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results"): void {
+function printEmptySearchResults(
+  format: OutputFormat,
+  reason: EmptySearchReason = "no_results",
+): void {
   if (format === "json") {
     console.log("[]");
     return;
@@ -2239,9 +2770,7 @@ type OutputRow = {
 const DEFAULT_EDITOR_URI_TEMPLATE = "vscode://file/{path}:{line}:{col}";
 
 function encodePathForEditorUri(absolutePath: string): string {
-  return encodeURI(absolutePath)
-    .replace(/\?/g, "%3F")
-    .replace(/#/g, "%23");
+  return encodeURI(absolutePath).replace(/\?/g, "%3F").replace(/#/g, "%23");
 }
 
 function getEditorUriTemplate(): string {
@@ -2256,10 +2785,12 @@ function getEditorUriTemplate(): string {
       [key: string]: unknown;
     };
     const configTemplate = (
-      config.editor_uri
-      || config.editor_uri_template
-      || config.editorUri
-      || (typeof config["editor-uri"] === "string" ? config["editor-uri"] : undefined)
+      config.editor_uri ||
+      config.editor_uri_template ||
+      config.editorUri ||
+      (typeof config["editor-uri"] === "string"
+        ? config["editor-uri"]
+        : undefined)
     )?.trim();
 
     if (configTemplate) return configTemplate;
@@ -2270,7 +2801,12 @@ function getEditorUriTemplate(): string {
   return DEFAULT_EDITOR_URI_TEMPLATE;
 }
 
-export function buildEditorUri(template: string, absolutePath: string, line: number, col: number): string {
+export function buildEditorUri(
+  template: string,
+  absolutePath: string,
+  line: number,
+  col: number,
+): string {
   const safeLine = Number.isFinite(line) && line > 0 ? Math.floor(line) : 1;
   const safeCol = Number.isFinite(col) && col > 0 ? Math.floor(col) : 1;
   const encodedPath = encodePathForEditorUri(absolutePath);
@@ -2282,13 +2818,23 @@ export function buildEditorUri(template: string, absolutePath: string, line: num
     .replace(/\{column\}/g, String(safeCol));
 }
 
-export function termLink(text: string, url: string, isTTY: boolean = !!process.stdout.isTTY): string {
+export function termLink(
+  text: string,
+  url: string,
+  isTTY: boolean = !!process.stdout.isTTY,
+): string {
   if (!isTTY) return text;
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 
-function outputResults(results: OutputRow[], query: string, opts: OutputOptions): void {
-  const filtered = results.filter(r => r.score >= opts.minScore).slice(0, opts.limit);
+function outputResults(
+  results: OutputRow[],
+  query: string,
+  opts: OutputOptions,
+): void {
+  const filtered = results
+    .filter((r) => r.score >= opts.minScore)
+    .slice(0, opts.limit);
 
   if (filtered.length === 0) {
     printEmptySearchResults(opts.format, "min_score");
@@ -2326,9 +2872,16 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
 
   if (opts.format === "json") {
     // JSON output for LLM consumption
-    const output = filtered.map(row => {
+    const output = filtered.map((row) => {
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
-      const snippetInfo = extractSnippet(row.body, query, 300, row.chunkPos, row.chunkLen, opts.intent);
+      const snippetInfo = extractSnippet(
+        row.body,
+        query,
+        300,
+        row.chunkPos,
+        row.chunkLen,
+        opts.intent,
+      );
       let body = opts.full ? row.body : undefined;
       let snippet = !opts.full ? snippetInfo.snippet : undefined;
       if (opts.lineNumbers) {
@@ -2358,7 +2911,9 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         // --full-path: drop the docid, the on-disk path is the identifier.
         console.log(`${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
       } else {
-        console.log(`#${docid},${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+        console.log(
+          `#${docid},${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`,
+        );
       }
     }
   } else if (opts.format === "cli") {
@@ -2368,7 +2923,14 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     for (let i = 0; i < filtered.length; i++) {
       const row = filtered[i];
       if (!row) continue;
-      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent);
+      const { line, snippet } = extractSnippet(
+        row.body,
+        query,
+        500,
+        row.chunkPos,
+        row.chunkLen,
+        opts.intent,
+      );
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
 
       // Line 1: filepath with docid
@@ -2387,17 +2949,28 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
 
       // Only show :line if we actually found a term match in the snippet body (exclude header line).
       const snippetBody = snippet.split("\n").slice(1).join("\n").toLowerCase();
-      const hasMatch = query.toLowerCase().split(/\s+/).some(t => t.length > 0 && snippetBody.includes(t));
+      const hasMatch = query
+        .toLowerCase()
+        .split(/\s+/)
+        .some((t) => t.length > 0 && snippetBody.includes(t));
       const lineInfo = hasMatch ? `:${line}` : "";
-      const docidStr = (docid && !opts.fullPath) ? ` ${c.dim}#${docid}${c.reset}` : "";
+      const docidStr =
+        docid && !opts.fullPath ? ` ${c.dim}#${docid}${c.reset}` : "";
 
       if (process.stdout.isTTY && absolutePath && parsed?.path) {
         const linkLine = hasMatch ? line : 1;
-        const linkTarget = buildEditorUri(editorUriTemplate, absolutePath, linkLine, 1);
+        const linkTarget = buildEditorUri(
+          editorUriTemplate,
+          absolutePath,
+          linkLine,
+          1,
+        );
         const clickable = termLink(`${visiblePath}${lineInfo}`, linkTarget);
         console.log(`${c.cyan}${clickable}${c.reset}${docidStr}`);
       } else {
-        console.log(`${c.cyan}${visiblePath}${c.dim}${lineInfo}${c.reset}${docidStr}`);
+        console.log(
+          `${c.cyan}${visiblePath}${c.dim}${lineInfo}${c.reset}${docidStr}`,
+        );
       }
 
       // Line 2: Title (if available)
@@ -2415,36 +2988,51 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       console.log(`Score: ${c.bold}${score}${c.reset}`);
       if (opts.explain && row.explain) {
         const explain = row.explain;
-        const ftsScores = explain.ftsScores.length > 0
-          ? explain.ftsScores.map(formatExplainNumber).join(", ")
-          : "none";
-        const vecScores = explain.vectorScores.length > 0
-          ? explain.vectorScores.map(formatExplainNumber).join(", ")
-          : "none";
+        const ftsScores =
+          explain.ftsScores.length > 0
+            ? explain.ftsScores.map(formatExplainNumber).join(", ")
+            : "none";
+        const vecScores =
+          explain.vectorScores.length > 0
+            ? explain.vectorScores.map(formatExplainNumber).join(", ")
+            : "none";
         const contribSummary = explain.rrf.contributions
           .slice()
           .sort((a, b) => b.rrfContribution - a.rrfContribution)
           .slice(0, 3)
-          .map(c => `${c.source}/${c.queryType}#${c.rank}:${formatExplainNumber(c.rrfContribution)}`)
+          .map(
+            (c) =>
+              `${c.source}/${c.queryType}#${c.rank}:${formatExplainNumber(c.rrfContribution)}`,
+          )
           .join(" | ");
 
-        console.log(`${c.dim}Explain: fts=[${ftsScores}] vec=[${vecScores}]${c.reset}`);
-        console.log(`${c.dim}  RRF: total=${formatExplainNumber(explain.rrf.totalScore)} base=${formatExplainNumber(explain.rrf.baseScore)} bonus=${formatExplainNumber(explain.rrf.topRankBonus)} rank=${explain.rrf.rank}${c.reset}`);
-        console.log(`${c.dim}  Blend: ${Math.round(explain.rrf.weight * 100)}%*${formatExplainNumber(explain.rrf.positionScore)} + ${Math.round((1 - explain.rrf.weight) * 100)}%*${formatExplainNumber(explain.rerankScore)} = ${formatExplainNumber(explain.blendedScore)}${c.reset}`);
+        console.log(
+          `${c.dim}Explain: fts=[${ftsScores}] vec=[${vecScores}]${c.reset}`,
+        );
+        console.log(
+          `${c.dim}  RRF: total=${formatExplainNumber(explain.rrf.totalScore)} base=${formatExplainNumber(explain.rrf.baseScore)} bonus=${formatExplainNumber(explain.rrf.topRankBonus)} rank=${explain.rrf.rank}${c.reset}`,
+        );
+        console.log(
+          `${c.dim}  Blend: ${Math.round(explain.rrf.weight * 100)}%*${formatExplainNumber(explain.rrf.positionScore)} + ${Math.round((1 - explain.rrf.weight) * 100)}%*${formatExplainNumber(explain.rerankScore)} = ${formatExplainNumber(explain.blendedScore)}${c.reset}`,
+        );
         if (contribSummary.length > 0) {
-          console.log(`${c.dim}  Top RRF contributions: ${contribSummary}${c.reset}`);
+          console.log(
+            `${c.dim}  Top RRF contributions: ${contribSummary}${c.reset}`,
+          );
         }
       }
       console.log();
 
       // Snippet with highlighting (diff-style header included)
       const content = opts.full ? row.body : snippet;
-      const displayContent = opts.lineNumbers ? addLineNumbers(content, opts.full ? 1 : line) : content;
+      const displayContent = opts.lineNumbers
+        ? addLineNumbers(content, opts.full ? 1 : line)
+        : content;
       const highlighted = highlightTerms(displayContent, query);
       console.log(highlighted);
 
       // Double empty line between results
-      if (i < filtered.length - 1) console.log('\n');
+      if (i < filtered.length - 1) console.log("\n");
     }
   } else if (opts.format === "md") {
     for (let i = 0; i < filtered.length; i++) {
@@ -2453,27 +3041,54 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       const visiblePath = displayPathFor(row);
       const heading = row.title || visiblePath;
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : undefined);
-      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
+      let content = opts.full
+        ? row.body
+        : extractSnippet(
+            row.body,
+            query,
+            500,
+            row.chunkPos,
+            row.chunkLen,
+            opts.intent,
+          ).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
       const fileLine = `**file:** \`${visiblePath}\`\n`;
       // With --full-path the on-disk path is the identifier; drop the docid line.
-      const docidLine = (docid && !opts.fullPath) ? `**docid:** \`#${docid}\`\n` : "";
+      const docidLine =
+        docid && !opts.fullPath ? `**docid:** \`#${docid}\`\n` : "";
       const contextLine = row.context ? `**context:** ${row.context}\n` : "";
-      console.log(`---\n# ${heading}\n${fileLine}${docidLine}${contextLine}\n${content}\n`);
+      console.log(
+        `---\n# ${heading}\n${fileLine}${docidLine}${contextLine}\n${content}\n`,
+      );
     }
   } else if (opts.format === "xml") {
     for (const row of filtered) {
-      const titleAttr = row.title ? ` title="${row.title.replace(/"/g, '&quot;')}"` : "";
-      const contextAttr = row.context ? ` context="${row.context.replace(/"/g, '&quot;')}"` : "";
+      const titleAttr = row.title
+        ? ` title="${row.title.replace(/"/g, "&quot;")}"`
+        : "";
+      const contextAttr = row.context
+        ? ` context="${row.context.replace(/"/g, "&quot;")}"`
+        : "";
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
-      let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
+      let content = opts.full
+        ? row.body
+        : extractSnippet(
+            row.body,
+            query,
+            500,
+            row.chunkPos,
+            row.chunkLen,
+            opts.intent,
+          ).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
       const docidAttr = opts.fullPath ? "" : ` docid="#${docid}"`;
-      console.log(`<file${docidAttr} name="${displayPathFor(row)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`);
+      console.log(
+        `<file${docidAttr} name="${displayPathFor(row)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`,
+      );
     }
   } else {
     // CSV format
@@ -2482,7 +3097,14 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       : "docid,score,file,title,context,line,snippet";
     console.log(csvHeader);
     for (const row of filtered) {
-      const { line, snippet } = extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent);
+      const { line, snippet } = extractSnippet(
+        row.body,
+        query,
+        500,
+        row.chunkPos,
+        row.chunkLen,
+        opts.intent,
+      );
       let content = opts.full ? row.body : snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content, opts.full ? 1 : line);
@@ -2502,7 +3124,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
 
 // Resolve -c collection filter: supports single string, array, or undefined.
 // Returns validated collection names (exits on unknown collection).
-function resolveCollectionFilter(raw: string | string[] | undefined, useDefaults: boolean = false): string[] {
+function resolveCollectionFilter(
+  raw: string | string[] | undefined,
+  useDefaults: boolean = false,
+): string[] {
   // If no filter specified and useDefaults is true, use default collections
   if (!raw && useDefaults) {
     return getDefaultCollectionNames();
@@ -2523,12 +3148,15 @@ function resolveCollectionFilter(raw: string | string[] | undefined, useDefaults
 }
 
 // Post-filter results to only include files from specified collections.
-function filterByCollections<T extends { filepath?: string; file?: string }>(results: T[], collectionNames: string[]): T[] {
+function filterByCollections<T extends { filepath?: string; file?: string }>(
+  results: T[],
+  collectionNames: string[],
+): T[] {
   if (collectionNames.length <= 1) return results;
-  const prefixes = collectionNames.map(n => `qmd://${n}/`);
-  return results.filter(r => {
-    const path = r.filepath || r.file || '';
-    return prefixes.some(p => path.startsWith(p));
+  const prefixes = collectionNames.map((n) => `qmd://${n}/`);
+  return results.filter((r) => {
+    const path = r.filepath || r.file || "";
+    return prefixes.some((p) => path.startsWith(p));
   });
 }
 
@@ -2536,11 +3164,11 @@ function filterByCollections<T extends { filepath?: string; file?: string }>(res
  * Parse structured search query syntax.
  * Lines starting with lex:, vec:, or hyde: are routed directly.
  * Plain lines without prefix go through query expansion.
- * 
+ *
  * Returns null if this is a plain query (single line, no prefix).
  * Returns ExpandedQuery[] if structured syntax detected.
  * Throws if multiple plain lines (ambiguous).
- * 
+ *
  * Examples:
  *   "CAP theorem"                    -> null (plain query, use expansion)
  *   "lex: CAP theorem"               -> [{ type: 'lex', query: 'CAP theorem' }]
@@ -2553,11 +3181,14 @@ interface ParsedStructuredQuery {
 }
 
 function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
-  const rawLines = query.split('\n').map((line, idx) => ({
-    raw: line,
-    trimmed: line.trim(),
-    number: idx + 1,
-  })).filter(line => line.trimmed.length > 0);
+  const rawLines = query
+    .split("\n")
+    .map((line, idx) => ({
+      raw: line,
+      trimmed: line.trim(),
+      number: idx + 1,
+    }))
+    .filter((line) => line.trimmed.length > 0);
 
   if (rawLines.length === 0) return null;
 
@@ -2570,11 +3201,13 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
   for (const line of rawLines) {
     if (expandRe.test(line.trimmed)) {
       if (rawLines.length > 1) {
-        throw new Error(`Line ${line.number} starts with expand:, but query documents cannot mix expand with typed lines. Submit a single expand query instead.`);
+        throw new Error(
+          `Line ${line.number} starts with expand:, but query documents cannot mix expand with typed lines. Submit a single expand query instead.`,
+        );
       }
-      const text = line.trimmed.replace(expandRe, '').trim();
+      const text = line.trimmed.replace(expandRe, "").trim();
       if (!text) {
-        throw new Error('expand: query must include text.');
+        throw new Error("expand: query must include text.");
       }
       return null; // treat as standalone expand query
     }
@@ -2582,9 +3215,11 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
     // Parse intent: lines
     if (intentRe.test(line.trimmed)) {
       if (intent !== undefined) {
-        throw new Error(`Line ${line.number}: only one intent: line is allowed per query document.`);
+        throw new Error(
+          `Line ${line.number}: only one intent: line is allowed per query document.`,
+        );
       }
-      const text = line.trimmed.replace(intentRe, '').trim();
+      const text = line.trimmed.replace(intentRe, "").trim();
       if (!text) {
         throw new Error(`Line ${line.number}: intent: must include text.`);
       }
@@ -2594,13 +3229,15 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
 
     const match = line.trimmed.match(prefixRe);
     if (match) {
-      const type = match[1]!.toLowerCase() as 'lex' | 'vec' | 'hyde';
+      const type = match[1]!.toLowerCase() as "lex" | "vec" | "hyde";
       const text = line.trimmed.slice(match[0].length).trim();
       if (!text) {
         throw new Error(`Line ${line.number} (${type}:) must include text.`);
       }
       if (/\r|\n/.test(text)) {
-        throw new Error(`Line ${line.number} (${type}:) contains a newline. Keep each query on a single line.`);
+        throw new Error(
+          `Line ${line.number} (${type}:) contains a newline. Keep each query on a single line.`,
+        );
       }
       typed.push({ type, query: text, line: line.number });
       continue;
@@ -2611,12 +3248,16 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
       return null;
     }
 
-    throw new Error(`Line ${line.number} is missing a lex:/vec:/hyde:/intent: prefix. Each line in a query document must start with one.`);
+    throw new Error(
+      `Line ${line.number} is missing a lex:/vec:/hyde:/intent: prefix. Each line in a query document must start with one.`,
+    );
   }
 
   // intent: alone is not a valid query — must have at least one search
   if (intent && typed.length === 0) {
-    throw new Error('intent: cannot appear alone. Add at least one lex:, vec:, or hyde: line.');
+    throw new Error(
+      "intent: cannot appear alone. Add at least one lex:, vec:, or hyde: line.",
+    );
   }
 
   return typed.length > 0 ? { searches: typed, intent } : null;
@@ -2628,17 +3269,18 @@ function search(query: string, opts: OutputOptions): void {
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
+  const singleCollection =
+    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
   const results = filterByCollections(
     searchFTS(db, query, fetchLimit, singleCollection),
-    collectionNames
+    collectionNames,
   );
 
   // Add context to results
-  const resultsWithContext = results.map(r => ({
+  const resultsWithContext = results.map((r) => ({
     file: r.filepath,
     displayPath: r.displayPath,
     title: r.title,
@@ -2659,78 +3301,101 @@ function search(query: string, opts: OutputOptions): void {
 }
 
 // Log query expansion as a tree to stderr (CLI progress feedback)
-function logExpansionTree(originalQuery: string, expanded: ExpandedQuery[]): void {
+function logExpansionTree(
+  originalQuery: string,
+  expanded: ExpandedQuery[],
+): void {
   const lines: string[] = [];
   lines.push(`${c.dim}├─ ${originalQuery}${c.reset}`);
   for (const q of expanded) {
-    let preview = q.query.replace(/\n/g, ' ');
-    if (preview.length > 72) preview = preview.substring(0, 69) + '...';
+    let preview = q.query.replace(/\n/g, " ");
+    if (preview.length > 72) preview = preview.substring(0, 69) + "...";
     lines.push(`${c.dim}├─ ${q.type}: ${preview}${c.reset}`);
   }
   if (lines.length > 0) {
-    lines[lines.length - 1] = lines[lines.length - 1]!.replace('├─', '└─');
+    lines[lines.length - 1] = lines[lines.length - 1]!.replace("├─", "└─");
   }
-  for (const line of lines) process.stderr.write(line + '\n');
+  for (const line of lines) process.stderr.write(line + "\n");
 }
 
-async function vectorSearch(query: string, opts: OutputOptions, _model: string = DEFAULT_EMBED_MODEL): Promise<void> {
+async function vectorSearch(
+  query: string,
+  opts: OutputOptions,
+  _model: string = DEFAULT_EMBED_MODEL,
+): Promise<void> {
   const store = getStore();
 
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
+  const singleCollection =
+    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
-  await withLLMSession(async () => {
-    let results = await vectorSearchQuery(store, query, {
-      collection: singleCollection,
-      limit: opts.all ? 500 : (opts.limit || 10),
-      minScore: opts.minScore || 0.3,
-      intent: opts.intent,
-      hooks: {
-        onExpand: (original, expanded) => {
-          logExpansionTree(original, expanded);
-          process.stderr.write(`${c.dim}Searching ${expanded.length + 1} vector queries...${c.reset}\n`);
+  await withLLMSession(
+    async () => {
+      let results = await vectorSearchQuery(store, query, {
+        collection: singleCollection,
+        limit: opts.all ? 500 : opts.limit || 10,
+        minScore: opts.minScore || 0.3,
+        intent: opts.intent,
+        hooks: {
+          onExpand: (original, expanded) => {
+            logExpansionTree(original, expanded);
+            process.stderr.write(
+              `${c.dim}Searching ${expanded.length + 1} vector queries...${c.reset}\n`,
+            );
+          },
         },
-      },
-    });
-
-    // Post-filter for multi-collection
-    if (collectionNames.length > 1) {
-      results = results.filter(r => {
-        const prefixes = collectionNames.map(n => `qmd://${n}/`);
-        return prefixes.some(p => r.file.startsWith(p));
       });
-    }
 
-    closeDb();
+      // Post-filter for multi-collection
+      if (collectionNames.length > 1) {
+        results = results.filter((r) => {
+          const prefixes = collectionNames.map((n) => `qmd://${n}/`);
+          return prefixes.some((p) => r.file.startsWith(p));
+        });
+      }
 
-    if (results.length === 0) {
-      printEmptySearchResults(opts.format);
-      return;
-    }
+      closeDb();
 
-    outputResults(results.map(r => ({
-      file: r.file,
-      displayPath: r.displayPath,
-      title: r.title,
-      body: r.body,
-      score: r.score,
-      context: r.context,
-      docid: r.docid,
-    })), query, { ...opts, limit: results.length });
-  }, { maxDuration: 10 * 60 * 1000, name: 'vectorSearch' });
+      if (results.length === 0) {
+        printEmptySearchResults(opts.format);
+        return;
+      }
+
+      outputResults(
+        results.map((r) => ({
+          file: r.file,
+          displayPath: r.displayPath,
+          title: r.title,
+          body: r.body,
+          score: r.score,
+          context: r.context,
+          docid: r.docid,
+        })),
+        query,
+        { ...opts, limit: results.length },
+      );
+    },
+    { maxDuration: 10 * 60 * 1000, name: "vectorSearch" },
+  );
 }
 
-async function querySearch(query: string, opts: OutputOptions, _embedModel: string = DEFAULT_EMBED_MODEL, _rerankModel: string = DEFAULT_RERANK_MODEL): Promise<void> {
+async function querySearch(
+  query: string,
+  opts: OutputOptions,
+  _embedModel: string = DEFAULT_EMBED_MODEL,
+  _rerankModel: string = DEFAULT_RERANK_MODEL,
+): Promise<void> {
   const store = getStore();
 
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
+  const singleCollection =
+    collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
@@ -2739,127 +3404,150 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   // Intent can come from --intent flag or from intent: line in query document
   const intent = opts.intent || parsed?.intent;
 
-  await withLLMSession(async () => {
-    let results;
+  await withLLMSession(
+    async () => {
+      let results;
 
-    if (parsed) {
-      const structuredQueries = parsed.searches;
-      // Structured search — user provided their own query expansions
-      const typeLabels = structuredQueries.map(s => s.type).join('+');
-      process.stderr.write(`${c.dim}Structured search: ${structuredQueries.length} queries (${typeLabels})${c.reset}\n`);
-      if (intent) {
-        process.stderr.write(`${c.dim}├─ intent: ${intent}${c.reset}\n`);
+      if (parsed) {
+        const structuredQueries = parsed.searches;
+        // Structured search — user provided their own query expansions
+        const typeLabels = structuredQueries.map((s) => s.type).join("+");
+        process.stderr.write(
+          `${c.dim}Structured search: ${structuredQueries.length} queries (${typeLabels})${c.reset}\n`,
+        );
+        if (intent) {
+          process.stderr.write(`${c.dim}├─ intent: ${intent}${c.reset}\n`);
+        }
+
+        // Log each sub-query
+        for (const s of structuredQueries) {
+          let preview = s.query.replace(/\n/g, " ");
+          if (preview.length > 72) preview = preview.substring(0, 69) + "...";
+          process.stderr.write(`${c.dim}├─ ${s.type}: ${preview}${c.reset}\n`);
+        }
+        process.stderr.write(`${c.dim}└─ Searching...${c.reset}\n`);
+
+        results = await structuredSearch(store, structuredQueries, {
+          collections: singleCollection ? [singleCollection] : undefined,
+          limit: opts.all ? 500 : opts.limit || 10,
+          minScore: opts.minScore || 0,
+          candidateLimit: opts.candidateLimit,
+          skipRerank: opts.skipRerank,
+          explain: !!opts.explain,
+          intent,
+          chunkStrategy: opts.chunkStrategy,
+          hooks: {
+            onEmbedStart: (count) => {
+              process.stderr.write(
+                `${c.dim}Embedding ${count} ${count === 1 ? "query" : "queries"}...${c.reset}`,
+              );
+            },
+            onEmbedDone: (ms) => {
+              process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
+            },
+            onRerankStart: (chunkCount) => {
+              process.stderr.write(
+                `${c.dim}Reranking ${chunkCount} chunks...${c.reset}`,
+              );
+              progress.indeterminate();
+            },
+            onRerankDone: (ms) => {
+              progress.clear();
+              process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
+            },
+          },
+        });
+      } else {
+        // Standard hybrid query with automatic expansion
+        results = await hybridQuery(store, query, {
+          collection: singleCollection,
+          limit: opts.all ? 500 : opts.limit || 10,
+          minScore: opts.minScore || 0,
+          candidateLimit: opts.candidateLimit,
+          skipRerank: opts.skipRerank,
+          explain: !!opts.explain,
+          intent,
+          chunkStrategy: opts.chunkStrategy,
+          hooks: {
+            onStrongSignal: (score) => {
+              process.stderr.write(
+                `${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`,
+              );
+            },
+            onExpandStart: () => {
+              process.stderr.write(`${c.dim}Expanding query...${c.reset}`);
+            },
+            onExpand: (original, expanded, ms) => {
+              process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
+              logExpansionTree(original, expanded);
+              process.stderr.write(
+                `${c.dim}Searching ${expanded.length + 1} queries...${c.reset}\n`,
+              );
+            },
+            onEmbedStart: (count) => {
+              process.stderr.write(
+                `${c.dim}Embedding ${count} ${count === 1 ? "query" : "queries"}...${c.reset}`,
+              );
+            },
+            onEmbedDone: (ms) => {
+              process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
+            },
+            onRerankStart: (chunkCount) => {
+              process.stderr.write(
+                `${c.dim}Reranking ${chunkCount} chunks...${c.reset}`,
+              );
+              progress.indeterminate();
+            },
+            onRerankDone: (ms) => {
+              progress.clear();
+              process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
+            },
+          },
+        });
       }
 
-      // Log each sub-query
-      for (const s of structuredQueries) {
-        let preview = s.query.replace(/\n/g, ' ');
-        if (preview.length > 72) preview = preview.substring(0, 69) + '...';
-        process.stderr.write(`${c.dim}├─ ${s.type}: ${preview}${c.reset}\n`);
+      // Post-filter for multi-collection
+      if (collectionNames.length > 1) {
+        results = results.filter((r) => {
+          const prefixes = collectionNames.map((n) => `qmd://${n}/`);
+          return prefixes.some((p) => r.file.startsWith(p));
+        });
       }
-      process.stderr.write(`${c.dim}└─ Searching...${c.reset}\n`);
 
-      results = await structuredSearch(store, structuredQueries, {
-        collections: singleCollection ? [singleCollection] : undefined,
-        limit: opts.all ? 500 : (opts.limit || 10),
-        minScore: opts.minScore || 0,
-        candidateLimit: opts.candidateLimit,
-        skipRerank: opts.skipRerank,
-        explain: !!opts.explain,
-        intent,
-        chunkStrategy: opts.chunkStrategy,
-        hooks: {
-          onEmbedStart: (count) => {
-            process.stderr.write(`${c.dim}Embedding ${count} ${count === 1 ? 'query' : 'queries'}...${c.reset}`);
-          },
-          onEmbedDone: (ms) => {
-            process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
-          },
-          onRerankStart: (chunkCount) => {
-            process.stderr.write(`${c.dim}Reranking ${chunkCount} chunks...${c.reset}`);
-            progress.indeterminate();
-          },
-          onRerankDone: (ms) => {
-            progress.clear();
-            process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
-          },
-        },
-      });
-    } else {
-      // Standard hybrid query with automatic expansion
-      results = await hybridQuery(store, query, {
-        collection: singleCollection,
-        limit: opts.all ? 500 : (opts.limit || 10),
-        minScore: opts.minScore || 0,
-        candidateLimit: opts.candidateLimit,
-        skipRerank: opts.skipRerank,
-        explain: !!opts.explain,
-        intent,
-        chunkStrategy: opts.chunkStrategy,
-        hooks: {
-          onStrongSignal: (score) => {
-            process.stderr.write(`${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`);
-          },
-          onExpandStart: () => {
-            process.stderr.write(`${c.dim}Expanding query...${c.reset}`);
-          },
-          onExpand: (original, expanded, ms) => {
-            process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
-            logExpansionTree(original, expanded);
-            process.stderr.write(`${c.dim}Searching ${expanded.length + 1} queries...${c.reset}\n`);
-          },
-          onEmbedStart: (count) => {
-            process.stderr.write(`${c.dim}Embedding ${count} ${count === 1 ? 'query' : 'queries'}...${c.reset}`);
-          },
-          onEmbedDone: (ms) => {
-            process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
-          },
-          onRerankStart: (chunkCount) => {
-            process.stderr.write(`${c.dim}Reranking ${chunkCount} chunks...${c.reset}`);
-            progress.indeterminate();
-          },
-          onRerankDone: (ms) => {
-            progress.clear();
-            process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
-          },
-        },
-      });
-    }
+      closeDb();
 
-    // Post-filter for multi-collection
-    if (collectionNames.length > 1) {
-      results = results.filter(r => {
-        const prefixes = collectionNames.map(n => `qmd://${n}/`);
-        return prefixes.some(p => r.file.startsWith(p));
-      });
-    }
+      if (results.length === 0) {
+        printEmptySearchResults(opts.format);
+        return;
+      }
 
-    closeDb();
+      // Use first lex/vec query for output context, or original query
+      const structuredQueries = parsed?.searches;
+      const displayQuery = structuredQueries
+        ? structuredQueries.find((s) => s.type === "lex")?.query ||
+          structuredQueries.find((s) => s.type === "vec")?.query ||
+          query
+        : query;
 
-    if (results.length === 0) {
-      printEmptySearchResults(opts.format);
-      return;
-    }
-
-    // Use first lex/vec query for output context, or original query
-    const structuredQueries = parsed?.searches;
-    const displayQuery = structuredQueries
-      ? (structuredQueries.find(s => s.type === 'lex')?.query || structuredQueries.find(s => s.type === 'vec')?.query || query)
-      : query;
-
-    outputResults(results.map(r => ({
-      file: r.file,
-      displayPath: r.displayPath,
-      title: r.title,
-      body: r.body,
-      chunkPos: r.bestChunkPos,
-      chunkLen: r.bestChunk.length,
-      score: r.score,
-      context: r.context,
-      docid: r.docid,
-      explain: r.explain,
-    })), displayQuery, { ...opts, limit: results.length });
-  }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
+      outputResults(
+        results.map((r) => ({
+          file: r.file,
+          displayPath: r.displayPath,
+          title: r.title,
+          body: r.body,
+          chunkPos: r.bestChunkPos,
+          chunkLen: r.bestChunk.length,
+          score: r.score,
+          context: r.context,
+          docid: r.docid,
+          explain: r.explain,
+        })),
+        displayQuery,
+        { ...opts, limit: results.length },
+      );
+    },
+    { maxDuration: 10 * 60 * 1000, name: "querySearch" },
+  );
 }
 
 // Parse CLI arguments using util.parseArgs
@@ -2884,7 +3572,7 @@ function parseCLI() {
       "min-score": { type: "string" },
       all: { type: "boolean" },
       full: { type: "boolean" },
-      format: { type: "string" },          // preferred: --format cli|json|csv|md|xml|files
+      format: { type: "string" }, // preferred: --format cli|json|csv|md|xml|files
       // Legacy boolean format aliases. Kept working for back-compat but
       // omitted from the documented help; prefer `--format <kind>`.
       csv: { type: "boolean" },
@@ -2893,31 +3581,31 @@ function parseCLI() {
       files: { type: "boolean" },
       json: { type: "boolean" },
       explain: { type: "boolean" },
-      collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
+      collection: { type: "string", short: "c", multiple: true }, // Filter by collection(s)
       // Collection options
-      name: { type: "string" },  // collection name
-      mask: { type: "string" },  // glob pattern
+      name: { type: "string" }, // collection name
+      mask: { type: "string" }, // glob pattern
       // Embed options
       force: { type: "boolean", short: "f" },
       "max-docs-per-batch": { type: "string" },
       "max-batch-mb": { type: "string" },
       // Update options
-      pull: { type: "boolean" },  // git pull before update
+      pull: { type: "boolean" }, // git pull before update
       refresh: { type: "boolean" },
       // Get options
-      l: { type: "string" },  // max lines
-      from: { type: "string" },  // start line
-      "max-bytes": { type: "string" },  // max bytes for multi-get
-      "line-numbers": { type: "boolean" },  // add line numbers to output (search; default on for get/multi-get)
-      "no-line-numbers": { type: "boolean" },  // disable line numbers for get/multi-get
-      "full-path": { type: "boolean" },  // show on-disk paths instead of qmd:// (get/multi-get/search/query)
+      l: { type: "string" }, // max lines
+      from: { type: "string" }, // start line
+      "max-bytes": { type: "string" }, // max bytes for multi-get
+      "line-numbers": { type: "boolean" }, // add line numbers to output (search; default on for get/multi-get)
+      "no-line-numbers": { type: "boolean" }, // disable line numbers for get/multi-get
+      "full-path": { type: "boolean" }, // show on-disk paths instead of qmd:// (get/multi-get/search/query)
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
       // Chunking options
-      "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
+      "chunk-strategy": { type: "string" }, // "regex" (default) or "auto" (AST for code files)
       // MCP HTTP transport options
       http: { type: "boolean" },
       daemon: { type: "boolean" },
@@ -2955,8 +3643,16 @@ function parseCLI() {
   // legacy boolean aliases (--csv/--md/--xml/--files/--json) which remain
   // wired up for back-compat but are no longer documented.
   let format: OutputFormat = "cli";
-  const rawFormat = typeof values.format === "string" ? values.format.toLowerCase().trim() : "";
-  const VALID_FORMATS: ReadonlyArray<OutputFormat> = ["cli", "json", "csv", "md", "xml", "files"];
+  const rawFormat =
+    typeof values.format === "string" ? values.format.toLowerCase().trim() : "";
+  const VALID_FORMATS: ReadonlyArray<OutputFormat> = [
+    "cli",
+    "json",
+    "csv",
+    "md",
+    "xml",
+    "files",
+  ];
   if (rawFormat) {
     if ((VALID_FORMATS as ReadonlyArray<string>).includes(rawFormat)) {
       format = rawFormat as OutputFormat;
@@ -2973,18 +3669,26 @@ function parseCLI() {
 
   // Default limit: 20 for --files/--json, 5 otherwise
   // --all means return all results (use very large limit)
-  const defaultLimit = (format === "files" || format === "json") ? 20 : 5;
+  const defaultLimit = format === "files" || format === "json" ? 20 : 5;
   const isAll = !!values.all;
 
   const opts: OutputOptions = {
     format,
     full: !!values.full,
-    limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
-    minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
+    limit: isAll
+      ? 100000
+      : values.n
+        ? parseInt(String(values.n), 10) || defaultLimit
+        : defaultLimit,
+    minScore: values["min-score"]
+      ? parseFloat(String(values["min-score"])) || 0
+      : 0,
     all: isAll,
     collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],
-    candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
+    candidateLimit: values["candidate-limit"]
+      ? parseInt(String(values["candidate-limit"]), 10)
+      : undefined,
     skipRerank: !!values["no-rerank"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
@@ -3070,7 +3774,9 @@ function getSkillSearchDirs(_runtimeOnly = false): string[] {
   return existsSync(dir) ? [dir] : [];
 }
 
-function parseSkillFrontmatter(content: string): { name: string; description: string; hidden: boolean } | null {
+function parseSkillFrontmatter(
+  content: string,
+): { name: string; description: string; hidden: boolean } | null {
   const trimmed = content.trimStart();
   if (!trimmed.startsWith("---")) return null;
   const end = trimmed.slice(3).indexOf("\n---");
@@ -3132,14 +3838,18 @@ function discoverSkills(runtimeOnly = false): SkillInfo[] {
 }
 
 function findSkill(name: string, runtimeOnly = false): SkillInfo | null {
-  return discoverSkills(runtimeOnly).find((skill) => skill.name === name) ?? null;
+  return (
+    discoverSkills(runtimeOnly).find((skill) => skill.name === name) ?? null
+  );
 }
 
 function readSkillContent(skill: SkillInfo): string {
   return readFileSync(resolve(skill.dir, "SKILL.md"), "utf-8");
 }
 
-function collectSkillFiles(skill: SkillInfo): { relativePath: string; content: string }[] {
+function collectSkillFiles(
+  skill: SkillInfo,
+): { relativePath: string; content: string }[] {
   const files: { relativePath: string; content: string }[] = [];
   for (const subdirName of ["references", "templates", "scripts"]) {
     const subdir = resolve(skill.dir, subdirName);
@@ -3148,7 +3858,10 @@ function collectSkillFiles(skill: SkillInfo): { relativePath: string; content: s
       const filePath = resolve(subdir, entry);
       try {
         if (!statSync(filePath).isFile()) continue;
-        files.push({ relativePath: `${subdirName}/${basename(filePath)}`, content: readFileSync(filePath, "utf-8") });
+        files.push({
+          relativePath: `${subdirName}/${basename(filePath)}`,
+          content: readFileSync(filePath, "utf-8"),
+        });
       } catch {
         // Ignore unreadable supplementary files.
       }
@@ -3160,7 +3873,9 @@ function collectSkillFiles(skill: SkillInfo): { relativePath: string; content: s
 function showSkill(): void {
   const skill = findSkill("qmd");
   if (!skill) {
-    throw new Error("QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.");
+    throw new Error(
+      "QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.",
+    );
   }
   console.log("QMD Skill");
   console.log("");
@@ -3214,33 +3929,50 @@ Then follow those instructions. In short: search first, fetch full sources with
 function writeSkillInstall(targetDir: string, force: boolean): void {
   if (pathExists(targetDir)) {
     if (!force) {
-      throw new Error(`Skill already exists: ${targetDir} (use --force to replace it)`);
+      throw new Error(
+        `Skill already exists: ${targetDir} (use --force to replace it)`,
+      );
     }
     removePath(targetDir);
   }
 
   const skill = findSkill("qmd");
   if (!skill) {
-    throw new Error("QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.");
+    throw new Error(
+      "QMD skill not found. Reinstall qmd or set QMD_SKILLS_DIR.",
+    );
   }
 
   copyDirectoryContents(skill.dir, targetDir);
-  writeFileSync(resolve(targetDir, "SKILL.md"), installedSkillStubContent(), "utf-8");
+  writeFileSync(
+    resolve(targetDir, "SKILL.md"),
+    installedSkillStubContent(),
+    "utf-8",
+  );
 }
 
 function outputSkillsJson(payload: unknown): void {
   console.log(JSON.stringify(payload));
 }
 
-function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false, allOption = false): void {
+function runSkillsCommand(
+  args: string[],
+  jsonMode: boolean,
+  fullOption = false,
+  allOption = false,
+): void {
   const subcommand = args[0] ?? "list";
-  const runtimeSkills = () => discoverSkills(true).filter((skill) => !skill.hidden);
+  const runtimeSkills = () =>
+    discoverSkills(true).filter((skill) => !skill.hidden);
 
   switch (subcommand) {
     case "list": {
       const skills = runtimeSkills();
       if (jsonMode) {
-        outputSkillsJson({ success: true, data: skills.map(({ name, description }) => ({ name, description })) });
+        outputSkillsJson({
+          success: true,
+          data: skills.map(({ name, description }) => ({ name, description })),
+        });
         return;
       }
       if (skills.length === 0) {
@@ -3257,14 +3989,18 @@ function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false,
     case "get": {
       const full = fullOption || args.includes("--full");
       const getAll = allOption || args.includes("--all");
-      const names = args.slice(1).filter((arg) => arg !== "--full" && arg !== "--all");
-      const targets = getAll ? runtimeSkills() : names.map((name) => {
-        const skill = findSkill(name, true);
-        if (!skill) {
-          throw new Error(`Skill not found: ${name}`);
-        }
-        return skill;
-      });
+      const names = args
+        .slice(1)
+        .filter((arg) => arg !== "--full" && arg !== "--all");
+      const targets = getAll
+        ? runtimeSkills()
+        : names.map((name) => {
+            const skill = findSkill(name, true);
+            if (!skill) {
+              throw new Error(`Skill not found: ${name}`);
+            }
+            return skill;
+          });
 
       if (targets.length === 0) {
         throw new Error("No skill name provided. Usage: qmd skills get <name>");
@@ -3276,7 +4012,14 @@ function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false,
           data: targets.map((skill) => ({
             name: skill.name,
             content: readSkillContent(skill),
-            ...(full ? { files: collectSkillFiles(skill).map((file) => ({ path: file.relativePath, content: file.content })) } : {}),
+            ...(full
+              ? {
+                  files: collectSkillFiles(skill).map((file) => ({
+                    path: file.relativePath,
+                    content: file.content,
+                  })),
+                }
+              : {}),
           })),
         });
         return;
@@ -3289,7 +4032,9 @@ function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false,
         if (full) {
           for (const file of collectSkillFiles(skill)) {
             console.log(`\n--- ${file.relativePath} ---\n`);
-            process.stdout.write(file.content.endsWith("\n") ? file.content : file.content + "\n");
+            process.stdout.write(
+              file.content.endsWith("\n") ? file.content : file.content + "\n",
+            );
           }
         }
       });
@@ -3308,7 +4053,11 @@ function runSkillsCommand(args: string[], jsonMode: boolean, fullOption = false,
       if (!skill) {
         throw new Error(`Skill not found: ${name}`);
       }
-      if (jsonMode) outputSkillsJson({ success: true, data: { name: skill.name, path: skill.dir } });
+      if (jsonMode)
+        outputSkillsJson({
+          success: true,
+          data: { name: skill.name, path: skill.dir },
+        });
       else console.log(skill.dir);
       return;
     }
@@ -3337,7 +4086,11 @@ function showSkillsHelp(): void {
   console.log("  --json               Print structured JSON");
 }
 
-function ensureClaudeSymlink(linkPath: string, targetDir: string, force: boolean): boolean {
+function ensureClaudeSymlink(
+  linkPath: string,
+  targetDir: string,
+  force: boolean,
+): boolean {
   const parentDir = dirname(linkPath);
   if (pathExists(parentDir)) {
     const resolvedTargetDir = realpathSync(dirname(targetDir));
@@ -3360,7 +4113,9 @@ function ensureClaudeSymlink(linkPath: string, targetDir: string, force: boolean
       return true;
     }
     if (!force) {
-      throw new Error(`Claude skill path already exists: ${linkPath} (use --force to replace it)`);
+      throw new Error(
+        `Claude skill path already exists: ${linkPath} (use --force to replace it)`,
+      );
     }
     removePath(linkPath);
   }
@@ -3369,7 +4124,10 @@ function ensureClaudeSymlink(linkPath: string, targetDir: string, force: boolean
   return true;
 }
 
-async function shouldCreateClaudeSymlink(linkPath: string, autoYes: boolean): Promise<boolean> {
+async function shouldCreateClaudeSymlink(
+  linkPath: string,
+  autoYes: boolean,
+): Promise<boolean> {
   if (autoYes) {
     return true;
   }
@@ -3392,7 +4150,11 @@ async function shouldCreateClaudeSymlink(linkPath: string, autoYes: boolean): Pr
   }
 }
 
-async function installSkill(globalInstall: boolean, force: boolean, autoYes: boolean): Promise<void> {
+async function installSkill(
+  globalInstall: boolean,
+  force: boolean,
+  autoYes: boolean,
+): Promise<void> {
   const installDir = getSkillInstallDir(globalInstall);
   writeSkillInstall(installDir, force);
   console.log(`✓ Installed QMD skill to ${installDir}`);
@@ -3406,7 +4168,9 @@ async function installSkill(globalInstall: boolean, force: boolean, autoYes: boo
   if (linked) {
     console.log(`✓ Linked Claude skill at ${claudeLinkPath}`);
   } else {
-    console.log(`✓ Claude already sees the skill via ${dirname(claudeLinkPath)}`);
+    console.log(
+      `✓ Claude already sees the skill via ${dirname(claudeLinkPath)}`,
+    );
   }
 }
 
@@ -3417,35 +4181,77 @@ function showHelp(): void {
   console.log("  qmd <command> [options]");
   console.log("");
   console.log("Primary commands:");
-  console.log("  qmd query <query>             - Hybrid search with auto expansion + reranking (recommended)");
-  console.log("  qmd query 'lex:..\\nvec:...'   - Structured query document (you provide lex/vec/hyde lines)");
-  console.log("  qmd search <query>            - Full-text BM25 keywords (no LLM)");
+  console.log(
+    "  qmd query <query>             - Hybrid search with auto expansion + reranking (recommended)",
+  );
+  console.log(
+    "  qmd query 'lex:..\\nvec:...'   - Structured query document (you provide lex/vec/hyde lines)",
+  );
+  console.log(
+    "  qmd search <query>            - Full-text BM25 keywords (no LLM)",
+  );
   console.log("  qmd vsearch <query>           - Vector similarity only");
-  console.log("  qmd get <file>[:from[:count]] - Show a document (line-numbered; #docid in header)");
-  console.log("  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list");
-  console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
-  console.log("  qmd skill show/install        - Show or install the QMD skill");
-  console.log("  qmd mcp                       - Start the MCP server (stdio transport for AI agents)");
-  console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file");
+  console.log(
+    "  qmd get <file>[:from[:count]] - Show a document (line-numbered; #docid in header)",
+  );
+  console.log(
+    "  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list",
+  );
+  console.log(
+    "  qmd skills list/get/path      - List and retrieve bundled runtime skills",
+  );
+  console.log(
+    "  qmd skill show/install        - Show or install the QMD skill",
+  );
+  console.log(
+    "  qmd mcp                       - Start the MCP server (stdio transport for AI agents)",
+  );
+  console.log(
+    "  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file",
+  );
   console.log("");
   console.log("Collections & context:");
-  console.log("  qmd collection add/list/remove/rename/show   - Manage indexed folders");
-  console.log("  qmd context add/list/rm                      - Attach human-written summaries");
-  console.log("  qmd ls [collection[/path]]                   - Inspect indexed files");
+  console.log(
+    "  qmd collection add/list/remove/rename/show   - Manage indexed folders",
+  );
+  console.log(
+    "  qmd context add/list/rm                      - Attach human-written summaries",
+  );
+  console.log(
+    "  qmd ls [collection[/path]]                   - Inspect indexed files",
+  );
   console.log("");
   console.log("Maintenance:");
-  console.log("  qmd init                      - Create a project-local .qmd index");
-  console.log("  qmd status                    - View index + collection health");
-  console.log("  qmd update [--pull]           - Re-index collections (optionally git pull first)");
-  console.log("  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings");
-  console.log("    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch");
-  console.log("    --max-batch-mb <n>          - Cap UTF-8 MB loaded into memory per embedding batch");
+  console.log(
+    "  qmd init                      - Create a project-local .qmd index",
+  );
+  console.log(
+    "  qmd status                    - View index + collection health",
+  );
+  console.log(
+    "  qmd update [--pull]           - Re-index collections (optionally git pull first)",
+  );
+  console.log(
+    "  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings",
+  );
+  console.log(
+    "    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch",
+  );
+  console.log(
+    "    --max-batch-mb <n>          - Cap UTF-8 MB loaded into memory per embedding batch",
+  );
   console.log("  qmd cleanup                   - Clear caches, vacuum DB");
   console.log("");
   console.log("Query syntax (qmd query):");
-  console.log("  QMD queries are either a single expand query (no prefix) or a multi-line");
-  console.log("  document where every line is typed with lex:, vec:, or hyde:. This grammar");
-  console.log("  matches the docs in docs/SYNTAX.md and is enforced in the CLI.");
+  console.log(
+    "  QMD queries are either a single expand query (no prefix) or a multi-line",
+  );
+  console.log(
+    "  document where every line is typed with lex:, vec:, or hyde:. This grammar",
+  );
+  console.log(
+    "  matches the docs in docs/SYNTAX.md and is enforced in the CLI.",
+  );
   console.log("");
   const grammar = [
     `query          = expand_query | query_document ;`,
@@ -3466,50 +4272,104 @@ function showHelp(): void {
   }
   console.log("");
   console.log("  Examples:");
-  console.log("    qmd query \"how does auth work\"                # single-line → implicit expand");
-  console.log("    qmd query $'lex: CAP theorem\\nvec: consistency'  # typed query document");
-  console.log("    qmd query $'lex: \"exact matches\" sports -baseball'  # phrase + negation lex search");
-  console.log("    qmd query $'hyde: Hypothetical answer text'       # hyde-only document");
+  console.log(
+    '    qmd query "how does auth work"                # single-line → implicit expand',
+  );
+  console.log(
+    "    qmd query $'lex: CAP theorem\\nvec: consistency'  # typed query document",
+  );
+  console.log(
+    "    qmd query $'lex: \"exact matches\" sports -baseball'  # phrase + negation lex search",
+  );
+  console.log(
+    "    qmd query $'hyde: Hypothetical answer text'       # hyde-only document",
+  );
   console.log("");
   console.log("  Constraints:");
   console.log("    - Standalone expand queries cannot mix with typed lines.");
-  console.log("    - Query documents allow only lex:, vec:, or hyde: prefixes.");
-  console.log("    - Each typed line must be single-line text with balanced quotes.");
+  console.log(
+    "    - Query documents allow only lex:, vec:, or hyde: prefixes.",
+  );
+  console.log(
+    "    - Each typed line must be single-line text with balanced quotes.",
+  );
   console.log("");
   console.log("AI agents & integrations:");
-  console.log("  - Run `qmd mcp` to expose the MCP server (stdio) to agents/IDEs.");
-  console.log("  - Run `qmd skills get qmd --full` for version-matched agent instructions.");
-  console.log("  - `qmd skill install` installs the QMD skill into ./.agents/skills/qmd.");
+  console.log(
+    "  - Run `qmd mcp` to expose the MCP server (stdio) to agents/IDEs.",
+  );
+  console.log(
+    "  - Run `qmd skills get qmd --full` for version-matched agent instructions.",
+  );
+  console.log(
+    "  - `qmd skill install` installs the QMD skill into ./.agents/skills/qmd.",
+  );
   console.log("  - Use `qmd skill install --global` for ~/.agents/skills/qmd.");
   console.log("  - `qmd --skill` is kept as an alias for `qmd skill show`.");
-  console.log("  - Advanced: `qmd mcp --http ...` and `qmd mcp --http --daemon` are optional for custom transports.");
+  console.log(
+    "  - Advanced: `qmd mcp --http ...` and `qmd mcp --http --daemon` are optional for custom transports.",
+  );
   console.log("");
   console.log("Global options:");
-  console.log("  --index <name>             - Use a named index (default: index)");
-  console.log("  QMD_EDITOR_URI             - Editor link template for clickable TTY search output");
+  console.log(
+    "  --index <name>             - Use a named index (default: index)",
+  );
+  console.log(
+    "  QMD_EDITOR_URI             - Editor link template for clickable TTY search output",
+  );
   console.log("");
   console.log("Search options:");
-  console.log("  -n <num>                   - Max results (default 5, or 20 for --format files|json)");
-  console.log("  --all                      - Return all matches (pair with --min-score)");
+  console.log(
+    "  -n <num>                   - Max results (default 5, or 20 for --format files|json)",
+  );
+  console.log(
+    "  --all                      - Return all matches (pair with --min-score)",
+  );
   console.log("  --min-score <num>          - Minimum similarity score");
-  console.log("  --full                     - Output full document instead of snippet");
-  console.log("  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)");
-  console.log("  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)");
-  console.log("  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)");
-  console.log("  --line-numbers             - Include line numbers (search; get/multi-get are on by default)");
-  console.log("  --no-line-numbers          - Disable line numbers for get/multi-get");
-  console.log("  --full-path                - Show on-disk paths instead of qmd:// + docid (get/multi-get/search/query)");
-  console.log("                                Paths are ./-prefixed when under $PWD, absolute otherwise");
-  console.log("  --explain                  - Include retrieval score traces (query, CLI/--format json)");
-  console.log("  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files");
-  console.log("  -c, --collection <name>    - Filter by one or more collections");
+  console.log(
+    "  --full                     - Output full document instead of snippet",
+  );
+  console.log(
+    "  -C, --candidate-limit <n>  - Max candidates to rerank (default 40, lower = faster)",
+  );
+  console.log(
+    "  --no-rerank                - Skip LLM reranking (use RRF scores only, much faster on CPU)",
+  );
+  console.log(
+    "  --no-gpu                   - Force CPU mode for llama.cpp operations (same as QMD_FORCE_CPU=1)",
+  );
+  console.log(
+    "  --line-numbers             - Include line numbers (search; get/multi-get are on by default)",
+  );
+  console.log(
+    "  --no-line-numbers          - Disable line numbers for get/multi-get",
+  );
+  console.log(
+    "  --full-path                - Show on-disk paths instead of qmd:// + docid (get/multi-get/search/query)",
+  );
+  console.log(
+    "                                Paths are ./-prefixed when under $PWD, absolute otherwise",
+  );
+  console.log(
+    "  --explain                  - Include retrieval score traces (query, CLI/--format json)",
+  );
+  console.log(
+    "  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files",
+  );
+  console.log(
+    "  -c, --collection <name>    - Filter by one or more collections",
+  );
   console.log("");
   console.log("Embed/query options:");
-  console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
+  console.log(
+    "  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)",
+  );
   console.log("");
   console.log("Multi-get options:");
   console.log("  -l <num>                   - Maximum lines per file");
-  console.log("  --max-bytes <num>          - Skip files larger than N bytes (default 10240)");
+  console.log(
+    "  --max-bytes <num>          - Skip files larger than N bytes (default 10240)",
+  );
   console.log("  --format <kind>            - Same formats as search");
   console.log("");
   console.log(`Index: ${getDbPath()}`);
@@ -3533,14 +4393,20 @@ function shortModelName(model: string): string {
 
 function normalizedDoctorNextSteps(steps: string[]): string[] {
   const unique = Array.from(new Set(steps));
-  const hasForceEmbed = unique.some(step => step.includes("qmd embed --force"));
+  const hasForceEmbed = unique.some((step) =>
+    step.includes("qmd embed --force"),
+  );
   if (!hasForceEmbed) return unique;
-  return unique.filter(step => !step.includes("qmd embed") || step.startsWith("Run `qmd embed --force`"));
+  return unique.filter(
+    (step) =>
+      !step.includes("qmd embed") || step.startsWith("Run `qmd embed --force`"),
+  );
 }
 
 function shortHashSeq(hashSeq: string): string {
   const idx = hashSeq.lastIndexOf("_");
-  if (idx < 0) return hashSeq.length > 18 ? `${hashSeq.slice(0, 18)}...` : hashSeq;
+  if (idx < 0)
+    return hashSeq.length > 18 ? `${hashSeq.slice(0, 18)}...` : hashSeq;
   return `${hashSeq.slice(0, 12)}_${hashSeq.slice(idx + 1)}`;
 }
 
@@ -3550,7 +4416,9 @@ type DoctorVectorSampleResult = {
 };
 
 function decodeStoredEmbedding(bytes: Uint8Array): Float32Array {
-  return new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  return new Float32Array(
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  );
 }
 
 function cosineDistance(a: ArrayLike<number>, b: ArrayLike<number>): number {
@@ -3566,7 +4434,7 @@ function cosineDistance(a: ArrayLike<number>, b: ArrayLike<number>): number {
     normB += bv * bv;
   }
   if (normA === 0 || normB === 0) return Number.POSITIVE_INFINITY;
-  return 1 - (dot / (Math.sqrt(normA) * Math.sqrt(normB)));
+  return 1 - dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 type CachedModelInspection = {
@@ -3582,21 +4450,27 @@ function findCachedModelInspection(model: string): CachedModelInspection {
   const invalid: string[] = [];
   if (model.startsWith("hf:")) {
     const filename = model.split("/").pop();
-    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR)) return { path: null, invalid };
-    const entries = readdirSync(DEFAULT_MODEL_CACHE_DIR, { withFileTypes: true });
+    if (!filename || !existsSync(DEFAULT_MODEL_CACHE_DIR))
+      return { path: null, invalid };
+    const entries = readdirSync(DEFAULT_MODEL_CACHE_DIR, {
+      withFileTypes: true,
+    });
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.includes(filename)) continue;
       const candidate = pathJoin(DEFAULT_MODEL_CACHE_DIR, entry.name);
       const inspection = inspectGgufFile(candidate);
       if (inspection.valid) return { path: candidate, invalid };
-      invalid.push(`${formatModelDiagnosticPath(candidate)}: ${inspection.details}`);
+      invalid.push(
+        `${formatModelDiagnosticPath(candidate)}: ${inspection.details}`,
+      );
     }
     return { path: null, invalid };
   }
 
   const inspection = inspectGgufFile(model);
   if (inspection.valid) return { path: model, invalid };
-  if (inspection.exists) invalid.push(`${formatModelDiagnosticPath(model)}: ${inspection.details}`);
+  if (inspection.exists)
+    invalid.push(`${formatModelDiagnosticPath(model)}: ${inspection.details}`);
   return { path: null, invalid };
 }
 
@@ -3611,45 +4485,101 @@ function envValueForDisplay(value: string): string {
   return sanitized.length > 96 ? `${sanitized.slice(0, 93)}...` : sanitized;
 }
 
-function collectEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): EnvOverride[] {
+function collectEnvironmentOverrides(
+  activeModels: { embed: string; generate: string; rerank: string },
+  configModels: ModelsConfig = {},
+): EnvOverride[] {
   const overrides: EnvOverride[] = [];
   const add = (name: string, consequence: string) => {
     const raw = process.env[name]?.trim();
     if (!raw) return;
     overrides.push({ name, value: envValueForDisplay(raw), consequence });
   };
-  const addModel = (name: string, key: "embed" | "generate" | "rerank", active: string) => {
+  const addModel = (
+    name: string,
+    key: "embed" | "generate" | "rerank",
+    active: string,
+  ) => {
     const raw = process.env[name]?.trim();
     if (!raw) return;
     const configured = configModels[key];
-    const consequence = configured && configured !== raw
-      ? `set but ignored because index models.${key} is configured as ${configured}`
-      : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd pull\` plus \`qmd embed\``;
+    const consequence =
+      configured && configured !== raw
+        ? `set but ignored because index models.${key} is configured as ${configured}`
+        : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd pull\` plus \`qmd embed\``;
     overrides.push({ name, value: envValueForDisplay(raw), consequence });
   };
 
-  add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
-  add("QMD_CONFIG_DIR", "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME");
-  add("XDG_CONFIG_HOME", "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set");
-  add("XDG_CACHE_HOME", "moves the default index cache, model cache, and MCP daemon PID files");
+  add(
+    "INDEX_PATH",
+    "overrides the SQLite index path; QMD reads/writes a different database",
+  );
+  add(
+    "QMD_CONFIG_DIR",
+    "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME",
+  );
+  add(
+    "XDG_CONFIG_HOME",
+    "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set",
+  );
+  add(
+    "XDG_CACHE_HOME",
+    "moves the default index cache, model cache, and MCP daemon PID files",
+  );
   addModel("QMD_EMBED_MODEL", "embed", activeModels.embed);
   addModel("QMD_GENERATE_MODEL", "generate", activeModels.generate);
   addModel("QMD_RERANK_MODEL", "rerank", activeModels.rerank);
-  add("QMD_FORCE_CPU", "forces llama.cpp to bypass GPU backends; embeddings/query will be slower but GPU crashes are avoided");
-  add("QMD_LLAMA_GPU", "selects llama.cpp GPU backend (metal/cuda/vulkan) or disables GPU when set to false/off/0");
-  add("QMD_DOCTOR_DEVICE_PROBE", "controls qmd doctor native device probing; 0/off skips GPU probing");
-  add("QMD_EMBED_PARALLELISM", "overrides embedding parallel context count; too high can exhaust RAM/VRAM");
-  add("QMD_EXPAND_CONTEXT_SIZE", "overrides query expansion context size; larger values use more memory");
-  add("QMD_RERANK_CONTEXT_SIZE", "overrides reranker context size; larger values use more memory");
-  add("QMD_EMBED_CONTEXT_SIZE", "overrides embed context size; larger values use more memory");
-  add("QMD_EDITOR_URI", "overrides clickable editor link template in terminal output");
+  add(
+    "QMD_FORCE_CPU",
+    "forces llama.cpp to bypass GPU backends; embeddings/query will be slower but GPU crashes are avoided",
+  );
+  add(
+    "QMD_LLAMA_GPU",
+    "selects llama.cpp GPU backend (metal/cuda/vulkan) or disables GPU when set to false/off/0",
+  );
+  add(
+    "QMD_DOCTOR_DEVICE_PROBE",
+    "controls qmd doctor native device probing; 0/off skips GPU probing",
+  );
+  add(
+    "QMD_EMBED_PARALLELISM",
+    "overrides embedding parallel context count; too high can exhaust RAM/VRAM",
+  );
+  add(
+    "QMD_EXPAND_CONTEXT_SIZE",
+    "overrides query expansion context size; larger values use more memory",
+  );
+  add(
+    "QMD_RERANK_CONTEXT_SIZE",
+    "overrides reranker context size; larger values use more memory",
+  );
+  add(
+    "QMD_EMBED_CONTEXT_SIZE",
+    "overrides embed context size; larger values use more memory",
+  );
+  add(
+    "QMD_EDITOR_URI",
+    "overrides clickable editor link template in terminal output",
+  );
   add("QMD_SKILLS_DIR", "overrides where qmd skills are discovered from");
-  add("QMD_METAL_KEEP_RESIDENCY", "opts back into libggml-metal residency sets on darwin; restores ~0ms perf wins for long-lived processes but re-exposes the static-destructor backtrace dump at process exit (ggml-org/llama.cpp#22593)");
-  add("GGML_METAL_NO_RESIDENCY", "set automatically by the launcher on darwin to disable Metal residency sets (avoids ggml-org/llama.cpp#22593); override via QMD_METAL_KEEP_RESIDENCY=1");
+  add(
+    "QMD_METAL_KEEP_RESIDENCY",
+    "opts back into libggml-metal residency sets on darwin; restores ~0ms perf wins for long-lived processes but re-exposes the static-destructor backtrace dump at process exit (ggml-org/llama.cpp#22593)",
+  );
+  add(
+    "GGML_METAL_NO_RESIDENCY",
+    "set automatically by the launcher on darwin to disable Metal residency sets (avoids ggml-org/llama.cpp#22593); override via QMD_METAL_KEEP_RESIDENCY=1",
+  );
   add("NO_COLOR", "disables colored terminal output");
   add("CI", "disables real LLM operations inside QMD's LlamaCpp wrapper");
-  add("HF_ENDPOINT", "changes Hugging Face download endpoint used when pulling models");
-  add("QMD_WRAPPER_CAPTURE", "test/debug hook for the qmd shell wrapper; should not be set in normal use");
+  add(
+    "HF_ENDPOINT",
+    "changes Hugging Face download endpoint used when pulling models",
+  );
+  add(
+    "QMD_WRAPPER_CAPTURE",
+    "test/debug hook for the qmd shell wrapper; should not be set in normal use",
+  );
   add("WSL_DISTRO_NAME", "enables WSL path handling heuristics");
   add("WSL_INTEROP", "enables WSL path handling heuristics");
   return overrides;
@@ -3665,22 +4595,44 @@ function checkDoctorIndexConfig(nextSteps: string[]): DoctorConfigCheck {
     const config = loadConfig();
     const collectionCount = Object.keys(config.collections ?? {}).length;
     if (collectionCount === 0) {
-      doctorCheck("index config", false, "no collections configured. Next: `qmd collection add .`");
-      nextSteps.push("Run `qmd collection add . --name <name>` from the folder you want to index, or edit .qmd/index.yml manually.");
+      doctorCheck(
+        "index config",
+        false,
+        "no collections configured. Next: `qmd collection add .`",
+      );
+      nextSteps.push(
+        "Run `qmd collection add . --name <name>` from the folder you want to index, or edit .qmd/index.yml manually.",
+      );
     } else {
-      doctorCheck("index config", true, `${formatCount(collectionCount)} ${collectionCount === 1 ? "collection" : "collections"} configured`);
+      doctorCheck(
+        "index config",
+        true,
+        `${formatCount(collectionCount)} ${collectionCount === 1 ? "collection" : "collections"} configured`,
+      );
     }
     return { config, valid: true };
   } catch (error) {
-    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
+    const message =
+      error instanceof Error
+        ? sanitizeDiagnosticMessage(error.message)
+        : sanitizeDiagnosticMessage(String(error));
     const configPath = getConfigPath();
-    doctorCheck("index config", false, `invalid index.yml at ${configPath}: ${message}. Next: fix the YAML and rerun \`qmd doctor\``);
-    nextSteps.push(`Fix invalid YAML in ${configPath}, then rerun \`qmd doctor\`.`);
+    doctorCheck(
+      "index config",
+      false,
+      `invalid index.yml at ${configPath}: ${message}. Next: fix the YAML and rerun \`qmd doctor\``,
+    );
+    nextSteps.push(
+      `Fix invalid YAML in ${configPath}, then rerun \`qmd doctor\`.`,
+    );
     return { config: null, valid: false };
   }
 }
 
-function checkEnvironmentOverrides(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): void {
+function checkEnvironmentOverrides(
+  activeModels: { embed: string; generate: string; rerank: string },
+  configModels: ModelsConfig = {},
+): void {
   const overrides = collectEnvironmentOverrides(activeModels, configModels);
   if (overrides.length === 0) {
     doctorCheck("environment overrides", true, "none");
@@ -3689,26 +4641,61 @@ function checkEnvironmentOverrides(activeModels: { embed: string; generate: stri
 
   doctorCheck("environment overrides", false, `${overrides.length} set`);
   for (const override of overrides) {
-    console.log(`  - ${override.name}=${override.value}: ${override.consequence}`);
+    console.log(
+      `  - ${override.name}=${override.value}: ${override.consequence}`,
+    );
   }
 }
 
-function checkModelDefaults(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): void {
+function checkModelDefaults(
+  activeModels: { embed: string; generate: string; rerank: string },
+  configModels: ModelsConfig = {},
+): void {
   const checks = [
-    { role: "embedding", key: "embed", active: activeModels.embed, configured: configModels.embed, defaultModel: DEFAULT_EMBED_MODEL, envName: "QMD_EMBED_MODEL", envValue: process.env.QMD_EMBED_MODEL },
-    { role: "generation", key: "generate", active: activeModels.generate, configured: configModels.generate, defaultModel: DEFAULT_QUERY_MODEL, envName: "QMD_GENERATE_MODEL", envValue: process.env.QMD_GENERATE_MODEL },
-    { role: "reranking", key: "rerank", active: activeModels.rerank, configured: configModels.rerank, defaultModel: DEFAULT_RERANK_MODEL, envName: "QMD_RERANK_MODEL", envValue: process.env.QMD_RERANK_MODEL },
+    {
+      role: "embedding",
+      key: "embed",
+      active: activeModels.embed,
+      configured: configModels.embed,
+      defaultModel: DEFAULT_EMBED_MODEL,
+      envName: "QMD_EMBED_MODEL",
+      envValue: process.env.QMD_EMBED_MODEL,
+    },
+    {
+      role: "generation",
+      key: "generate",
+      active: activeModels.generate,
+      configured: configModels.generate,
+      defaultModel: DEFAULT_QUERY_MODEL,
+      envName: "QMD_GENERATE_MODEL",
+      envValue: process.env.QMD_GENERATE_MODEL,
+    },
+    {
+      role: "reranking",
+      key: "rerank",
+      active: activeModels.rerank,
+      configured: configModels.rerank,
+      defaultModel: DEFAULT_RERANK_MODEL,
+      envName: "QMD_RERANK_MODEL",
+      envValue: process.env.QMD_RERANK_MODEL,
+    },
   ] as const;
 
   const notes: string[] = [];
   for (const check of checks) {
     const envValue = check.envValue?.trim();
     if (envValue && check.active === envValue) {
-      notes.push(`${check.role}: env ${check.envName}=${check.active} (default ${check.defaultModel}; might be ok)`);
+      notes.push(
+        `${check.role}: env ${check.envName}=${check.active} (default ${check.defaultModel}; might be ok)`,
+      );
     } else if (check.configured && check.configured !== check.defaultModel) {
-      notes.push(`${check.role}: index ${check.configured} (default ${check.defaultModel}; might be ok)`);
+      notes.push(
+        `${check.role}: index ${check.configured} (default ${check.defaultModel}; might be ok)`,
+      );
     } else if (envValue && check.active !== envValue) {
-      notes.push(`${check.role}: ${check.envName} is set to ${envValue} but index config uses ${check.active}`);
+      notes.push(
+        `${check.role}: ${check.envName} is set to ${envValue} but index config uses ${check.active}`,
+      );
     }
   }
 
@@ -3717,10 +4704,17 @@ function checkModelDefaults(activeModels: { embed: string; generate: string; rer
     return;
   }
 
-  doctorCheck("model defaults", false, `non-default model configuration: ${notes.join("; ")}`);
+  doctorCheck(
+    "model defaults",
+    false,
+    `non-default model configuration: ${notes.join("; ")}`,
+  );
 }
 
-function checkModelCache(activeModels: { embed: string; generate: string; rerank: string }, nextSteps: string[]): void {
+function checkModelCache(
+  activeModels: { embed: string; generate: string; rerank: string },
+  nextSteps: string[],
+): void {
   const models = [
     ["embedding", activeModels.embed],
     ["generation", activeModels.generate],
@@ -3737,7 +4731,7 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
   for (const [model, roles] of unique) {
     const label = `${roles.join("+")}: ${model}`;
     const inspection = findCachedModelInspection(model);
-    invalid.push(...inspection.invalid.map(detail => `${label} (${detail})`));
+    invalid.push(...inspection.invalid.map((detail) => `${label} (${detail})`));
     if (inspection.path) {
       cached.push(label);
     } else {
@@ -3746,36 +4740,67 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
   }
 
   if (missing.length === 0 && invalid.length === 0) {
-    doctorCheck("model cache", true, `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded and valid GGUF`);
+    doctorCheck(
+      "model cache",
+      true,
+      `${cached.length} active ${cached.length === 1 ? "model is" : "models are"} downloaded and valid GGUF`,
+    );
     return;
   }
 
   const parts: string[] = [];
-  if (invalid.length > 0) parts.push(`invalid ${invalid.length}: ${invalid.join("; ")}`);
-  if (missing.length > 0) parts.push(`missing ${missing.length}/${unique.size}: ${missing.join("; ")}`);
-  const next = invalid.length > 0
-    ? "Next: run `qmd pull --refresh` (or remove the bad cached file)"
-    : "Next: run `qmd pull`";
+  if (invalid.length > 0)
+    parts.push(`invalid ${invalid.length}: ${invalid.join("; ")}`);
+  if (missing.length > 0)
+    parts.push(
+      `missing ${missing.length}/${unique.size}: ${missing.join("; ")}`,
+    );
+  const next =
+    invalid.length > 0
+      ? "Next: run `qmd pull --refresh` (or remove the bad cached file)"
+      : "Next: run `qmd pull`";
   doctorCheck("model cache", false, `${parts.join("; ")}. ${next}`);
   if (invalid.length > 0) {
-    nextSteps.push("Run `qmd pull --refresh` to replace invalid cached model files, or delete the listed file and rerun `qmd pull`.");
+    nextSteps.push(
+      "Run `qmd pull --refresh` to replace invalid cached model files, or delete the listed file and rerun `qmd pull`.",
+    );
   } else {
-    nextSteps.push("Run `qmd pull` to download missing embedding/generation/reranking models before `qmd embed` or `qmd query`.");
+    nextSteps.push(
+      "Run `qmd pull` to download missing embedding/generation/reranking models before `qmd embed` or `qmd query`.",
+    );
   }
 }
 
-async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
-  const activeDocs = (db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`).get() as { count: number }).count;
+async function checkEmbeddingVectorSamples(
+  db: Database,
+  model: string,
+  fingerprint: string,
+  sampleSize: number = 3,
+): Promise<DoctorVectorSampleResult> {
+  const activeDocs = (
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`)
+      .get() as { count: number }
+  ).count;
   if (activeDocs === 0) {
     return { ok: true, details: "no active documents indexed" };
   }
 
-  const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const vecTableExists = db
+    .prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
+    )
+    .get();
   if (!vecTableExists) {
-    return { ok: false, details: "no vector table to test; please run qmd embed again" };
+    return {
+      ok: false,
+      details: "no vector table to test; please run qmd embed again",
+    };
   }
 
-  const samples = db.prepare(`
+  const samples = db
+    .prepare(
+      `
     SELECT cv.hash, cv.seq, c.doc AS body, MIN(d.path) AS path
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
@@ -3784,45 +4809,77 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
     GROUP BY cv.hash, cv.seq, c.doc
     ORDER BY random()
     LIMIT ?
-  `).all(model, fingerprint, sampleSize) as { hash: string; seq: number; body: string; path: string }[];
+  `,
+    )
+    .all(model, fingerprint, sampleSize) as {
+    hash: string;
+    seq: number;
+    body: string;
+    path: string;
+  }[];
 
   if (samples.length === 0) {
-    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again" };
+    return {
+      ok: false,
+      details: "no current embedded chunks to test; please run qmd embed again",
+    };
   }
 
   const threshold = 0.0001;
   const mismatches: string[] = [];
 
   const doctorLlm = getStore().llm ?? getDefaultLlamaCpp();
-  await withLLMSessionForLlm(doctorLlm, async (session) => {
-    for (const sample of samples) {
-      const hashSeq = `${sample.hash}_${sample.seq}`;
-      const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
-      const chunk = chunks[sample.seq];
-      if (!chunk) {
-        mismatches.push(`${shortHashSeq(hashSeq)}: chunk no longer exists`);
-        continue;
-      }
+  await withLLMSessionForLlm(
+    doctorLlm,
+    async (session) => {
+      for (const sample of samples) {
+        const hashSeq = `${sample.hash}_${sample.seq}`;
+        const chunks = await chunkDocumentByTokens(
+          sample.body,
+          undefined,
+          undefined,
+          undefined,
+          sample.path,
+          undefined,
+          session.signal,
+        );
+        const chunk = chunks[sample.seq];
+        if (!chunk) {
+          mismatches.push(`${shortHashSeq(hashSeq)}: chunk no longer exists`);
+          continue;
+        }
 
-      const title = extractTitle(sample.body, sample.path);
-      const result = await session.embed(formatDocForEmbedding(chunk.text, title, model), { model });
-      if (!result) {
-        mismatches.push(`${shortHashSeq(hashSeq)}: embedding failed`);
-        continue;
-      }
+        const title = extractTitle(sample.body, sample.path);
+        const result = await session.embed(
+          formatDocForEmbedding(chunk.text, title, model),
+          { model },
+        );
+        if (!result) {
+          mismatches.push(`${shortHashSeq(hashSeq)}: embedding failed`);
+          continue;
+        }
 
-      const stored = db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get(hashSeq) as { embedding: Uint8Array } | undefined;
-      if (!stored) {
-        mismatches.push(`${shortHashSeq(hashSeq)}: stored vector missing`);
-        continue;
-      }
+        const stored = db
+          .prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`)
+          .get(hashSeq) as { embedding: Uint8Array } | undefined;
+        if (!stored) {
+          mismatches.push(`${shortHashSeq(hashSeq)}: stored vector missing`);
+          continue;
+        }
 
-      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored.embedding));
-      if (distance > threshold) {
-        mismatches.push(`${shortHashSeq(hashSeq)}: stored vector distance ${distance.toFixed(6)}`);
+        const distance = cosineDistance(
+          result.embedding,
+          decodeStoredEmbedding(stored.embedding),
+        );
+        if (distance > threshold) {
+          mismatches.push(
+            `${shortHashSeq(hashSeq)}: stored vector distance ${distance.toFixed(6)}`,
+          );
+        }
       }
-    }
-  }, { maxDuration: 10 * 60 * 1000, name: "doctorEmbeddingVectorSample" });
+    },
+    { maxDuration: 10 * 60 * 1000, name: "doctorEmbeddingVectorSample" },
+  );
 
   if (mismatches.length > 0) {
     return {
@@ -3842,9 +4899,15 @@ function hasLibraryInDirs(libraryBaseName: string, dirs: string[]): boolean {
     if (!dir || !existsSync(dir)) continue;
     try {
       for (const entry of readdirSync(dir)) {
-        if (entry === libraryBaseName || entry.startsWith(`${libraryBaseName}.`)) return true;
+        if (
+          entry === libraryBaseName ||
+          entry.startsWith(`${libraryBaseName}.`)
+        )
+          return true;
       }
-    } catch { /* ignore unreadable system library dirs */ }
+    } catch {
+      /* ignore unreadable system library dirs */
+    }
   }
   return false;
 }
@@ -3862,7 +4925,13 @@ function linuxCudaRuntimeDiagnostic(): string | null {
     dirs.add(pathJoin(process.env.CUDA_PATH, "lib64"));
     dirs.add(pathJoin(process.env.CUDA_PATH, "targets", "x86_64-linux", "lib"));
   }
-  for (const dir of ["/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/local/cuda/lib64", "/usr/local/cuda/targets/x86_64-linux/lib"]) {
+  for (const dir of [
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/targets/x86_64-linux/lib",
+  ]) {
     dirs.add(dir);
   }
   try {
@@ -3872,10 +4941,14 @@ function linuxCudaRuntimeDiagnostic(): string | null {
       dirs.add(pathJoin(cudaRoot, "lib64"));
       dirs.add(pathJoin(cudaRoot, "targets", "x86_64-linux", "lib"));
     }
-  } catch { /* /usr/local may not be readable in restricted environments */ }
+  } catch {
+    /* /usr/local may not be readable in restricted environments */
+  }
 
   const searchDirs = [...dirs];
-  const hasDriver = hasLibraryInDirs("libcuda.so", searchDirs) || hasLibraryInDirs("libnvidia-ml.so", searchDirs);
+  const hasDriver =
+    hasLibraryInDirs("libcuda.so", searchDirs) ||
+    hasLibraryInDirs("libnvidia-ml.so", searchDirs);
   if (!hasDriver) return null;
 
   const cudaLibraries: [library: string, label: string][] = [
@@ -3895,36 +4968,61 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
   const mode = configuredGpuModeLabel();
   doctorCheck("device mode", true, mode);
 
-  const skipProbe = ["0", "false", "off", "no", "skip"].includes((process.env.QMD_DOCTOR_DEVICE_PROBE ?? "").trim().toLowerCase());
+  const skipProbe = ["0", "false", "off", "no", "skip"].includes(
+    (process.env.QMD_DOCTOR_DEVICE_PROBE ?? "").trim().toLowerCase(),
+  );
   if (skipProbe) {
-    doctorCheck("device probe", false, "skipped by QMD_DOCTOR_DEVICE_PROBE=0. Next: unset it and rerun `qmd doctor` to verify GPU/CPU acceleration");
-    nextSteps.push("Unset `QMD_DOCTOR_DEVICE_PROBE` and rerun `qmd doctor` when you want to verify llama.cpp device acceleration.");
+    doctorCheck(
+      "device probe",
+      false,
+      "skipped by QMD_DOCTOR_DEVICE_PROBE=0. Next: unset it and rerun `qmd doctor` to verify GPU/CPU acceleration",
+    );
+    nextSteps.push(
+      "Unset `QMD_DOCTOR_DEVICE_PROBE` and rerun `qmd doctor` when you want to verify llama.cpp device acceleration.",
+    );
     return;
   }
 
-  const crashHint = "Probing native llama backend now. If qmd crashes here, rerun with `QMD_FORCE_CPU=1 qmd doctor` (or `QMD_DOCTOR_DEVICE_PROBE=0 qmd doctor` to skip this probe).";
+  const crashHint =
+    "Probing native llama backend now. If qmd crashes here, rerun with `QMD_FORCE_CPU=1 qmd doctor` (or `QMD_DOCTOR_DEVICE_PROBE=0 qmd doctor` to skip this probe).";
   if (process.stdout.isTTY) {
     process.stdout.write(`${c.dim}${crashHint}${c.reset}`);
   }
 
   try {
-    const device = await getDefaultLlamaCpp().getDeviceInfo({ allowBuild: false });
+    const device = await getDefaultLlamaCpp().getDeviceInfo({
+      allowBuild: false,
+    });
     if (process.stdout.isTTY) {
       process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
     }
     if (device.gpu) {
-      const gpuLabel = device.gpu === "metal" && process.platform === "darwin"
-        ? "metal (macOS Metal backend)"
-        : String(device.gpu);
-      const parts = [`GPU ${gpuLabel}`, `offloading ${device.gpuOffloading ? "enabled" : "disabled"}`];
-      if (device.gpuDevices.length > 0) parts.push(`devices: ${summarizeDeviceNames(device.gpuDevices)}`);
-      if (device.vram) parts.push(`VRAM ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`);
+      const gpuLabel =
+        device.gpu === "metal" && process.platform === "darwin"
+          ? "metal (macOS Metal backend)"
+          : String(device.gpu);
+      const parts = [
+        `GPU ${gpuLabel}`,
+        `offloading ${device.gpuOffloading ? "enabled" : "disabled"}`,
+      ];
+      if (device.gpuDevices.length > 0)
+        parts.push(`devices: ${summarizeDeviceNames(device.gpuDevices)}`);
+      if (device.vram)
+        parts.push(
+          `VRAM ${formatBytes(device.vram.free)} free / ${formatBytes(device.vram.total)} total`,
+        );
       parts.push(`${device.cpuCores} CPU math cores`);
-      doctorCheck("device probe", device.gpuOffloading, device.gpuOffloading
-        ? parts.join("; ")
-        : `${parts.join("; ")}. Next: check QMD_LLAMA_GPU and llama.cpp backend support`);
+      doctorCheck(
+        "device probe",
+        device.gpuOffloading,
+        device.gpuOffloading
+          ? parts.join("; ")
+          : `${parts.join("; ")}. Next: check QMD_LLAMA_GPU and llama.cpp backend support`,
+      );
       if (!device.gpuOffloading) {
-        nextSteps.push("GPU was detected but offloading is disabled; check `QMD_LLAMA_GPU=metal|cuda|vulkan` and rerun `qmd doctor`.");
+        nextSteps.push(
+          "GPU was detected but offloading is disabled; check `QMD_LLAMA_GPU=metal|cuda|vulkan` and rerun `qmd doctor`.",
+        );
       }
 
       // Surface the darwin residency-set mitigation. libggml-metal's
@@ -3938,34 +5036,53 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
           doctorCheck(
             "darwin metal residency",
             true,
-            "GGML_METAL_NO_RESIDENCY=1 set by launcher; clean process exit (avoids ggml-org/llama.cpp#22593). Opt back in with QMD_METAL_KEEP_RESIDENCY=1 if you run long-lived qmd processes."
+            "GGML_METAL_NO_RESIDENCY=1 set by launcher; clean process exit (avoids ggml-org/llama.cpp#22593). Opt back in with QMD_METAL_KEEP_RESIDENCY=1 if you run long-lived qmd processes.",
           );
         } else {
           doctorCheck(
             "darwin metal residency",
             false,
-            "residency sets active (QMD_METAL_KEEP_RESIDENCY=1 or launcher bypassed); llama-using commands may dump a libggml-metal backtrace at exit (ggml-org/llama.cpp#22593) even when output succeeded."
+            "residency sets active (QMD_METAL_KEEP_RESIDENCY=1 or launcher bypassed); llama-using commands may dump a libggml-metal backtrace at exit (ggml-org/llama.cpp#22593) even when output succeeded.",
           );
-          nextSteps.push("Unset `QMD_METAL_KEEP_RESIDENCY` so the launcher can disable Metal residency sets; without this, query/vsearch/embed dump a stack trace at exit even on success.");
+          nextSteps.push(
+            "Unset `QMD_METAL_KEEP_RESIDENCY` so the launcher can disable Metal residency sets; without this, query/vsearch/embed dump a stack trace at exit even on success.",
+          );
         }
       }
     } else {
       const cudaDiagnostic = linuxCudaRuntimeDiagnostic();
       const diagnosticSuffix = cudaDiagnostic ? ` ${cudaDiagnostic}.` : "";
-      doctorCheck("device probe", false, `running on CPU (${device.cpuCores} math cores).${diagnosticSuffix} Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`);
+      doctorCheck(
+        "device probe",
+        false,
+        `running on CPU (${device.cpuCores} math cores).${diagnosticSuffix} Next: install/configure Metal, CUDA, or Vulkan for faster embeddings, or set QMD_FORCE_CPU=1 to make CPU mode explicit`,
+      );
       if (cudaDiagnostic) {
-        nextSteps.push(`${cudaDiagnostic}; install CUDA runtime/cuBLAS libraries or add their directory to LD_LIBRARY_PATH, then rerun \`qmd doctor\`.`);
+        nextSteps.push(
+          `${cudaDiagnostic}; install CUDA runtime/cuBLAS libraries or add their directory to LD_LIBRARY_PATH, then rerun \`qmd doctor\`.`,
+        );
       } else {
-        nextSteps.push("Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.");
+        nextSteps.push(
+          "Vector operations are running on CPU; install/configure Metal, CUDA, or Vulkan if embedding/query performance is too slow.",
+        );
       }
     }
   } catch (error) {
     if (process.stdout.isTTY) {
       process.stdout.write(`\r${" ".repeat(crashHint.length)}\r`);
     }
-    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
-    doctorCheck("device probe", false, `probe failed: ${message}. Next: run with QMD_FORCE_CPU=1 to bypass GPU probing, or set QMD_LLAMA_GPU=metal|cuda|vulkan and retry`);
-    nextSteps.push("GPU probe failed; try `QMD_FORCE_CPU=1 qmd doctor` to confirm CPU fallback, then fix GPU drivers/backend if acceleration is expected.");
+    const message =
+      error instanceof Error
+        ? sanitizeDiagnosticMessage(error.message)
+        : sanitizeDiagnosticMessage(String(error));
+    doctorCheck(
+      "device probe",
+      false,
+      `probe failed: ${message}. Next: run with QMD_FORCE_CPU=1 to bypass GPU probing, or set QMD_LLAMA_GPU=metal|cuda|vulkan and retry`,
+    );
+    nextSteps.push(
+      "GPU probe failed; try `QMD_FORCE_CPU=1 qmd doctor` to confirm CPU fallback, then fix GPU drivers/backend if acceleration is expected.",
+    );
   }
 }
 
@@ -3983,20 +5100,35 @@ async function showDoctor(): Promise<void> {
   console.log(`Runtime: ${isBun ? "bun:sqlite" : "better-sqlite3"}`);
 
   try {
-    const row = db.prepare(`SELECT sqlite_version() AS version`).get() as { version: string };
+    const row = db.prepare(`SELECT sqlite_version() AS version`).get() as {
+      version: string;
+    };
     doctorCheck("SQLite runtime", true, row.version);
   } catch (error) {
-    doctorCheck("SQLite runtime", false, error instanceof Error ? error.message : String(error));
+    doctorCheck(
+      "SQLite runtime",
+      false,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
-  const betterSqliteVersion = pkg.dependencies?.["better-sqlite3"] ?? pkg.devDependencies?.["better-sqlite3"] ?? "not declared";
+  const betterSqliteVersion =
+    pkg.dependencies?.["better-sqlite3"] ??
+    pkg.devDependencies?.["better-sqlite3"] ??
+    "not declared";
   doctorCheck("better-sqlite3 package", true, String(betterSqliteVersion));
 
   try {
-    const row = db.prepare(`SELECT vec_version() AS version`).get() as { version: string };
+    const row = db.prepare(`SELECT vec_version() AS version`).get() as {
+      version: string;
+    };
     doctorCheck("sqlite-vec", true, row.version);
   } catch (error) {
-    doctorCheck("sqlite-vec", false, error instanceof Error ? error.message : String(error));
+    doctorCheck(
+      "sqlite-vec",
+      false,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   const configCheck = checkDoctorIndexConfig(nextSteps);
@@ -4008,79 +5140,166 @@ async function showDoctor(): Promise<void> {
   await runDoctorDeviceChecks(nextSteps);
 
   try {
-    const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
+    const adoption = await maybeAdoptLegacyEmbeddingFingerprint(
+      storeInstance,
+      embedModel,
+    );
     if (adoption.checked || adoption.adopted > 0) {
-      doctorCheck("legacy fingerprint adoption", adoption.adopted > 0, adoption.adopted > 0 ? `adopted ${adoption.adopted} legacy chunks; ${adoption.reason}` : adoption.reason);
+      doctorCheck(
+        "legacy fingerprint adoption",
+        adoption.adopted > 0,
+        adoption.adopted > 0
+          ? `adopted ${adoption.adopted} legacy chunks; ${adoption.reason}`
+          : adoption.reason,
+      );
     }
   } catch (error) {
-    doctorCheck("legacy fingerprint adoption", false, error instanceof Error ? error.message : String(error));
+    doctorCheck(
+      "legacy fingerprint adoption",
+      false,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   try {
     const pending = getHashesNeedingEmbedding(db, undefined, embedModel);
-    doctorCheck("embedding freshness", pending === 0, pending === 0 ? "all active documents match current fingerprint" : `${formatCount(pending)} active documents need embeddings. Next: \`qmd embed\``);
+    doctorCheck(
+      "embedding freshness",
+      pending === 0,
+      pending === 0
+        ? "all active documents match current fingerprint"
+        : `${formatCount(pending)} active documents need embeddings. Next: \`qmd embed\``,
+    );
     if (pending > 0) {
-      nextSteps.push(`Run \`qmd embed\` to generate ${formatCount(pending)} missing/stale document embeddings.`);
+      nextSteps.push(
+        `Run \`qmd embed\` to generate ${formatCount(pending)} missing/stale document embeddings.`,
+      );
     }
   } catch (error) {
-    doctorCheck("embedding freshness", false, error instanceof Error ? error.message : String(error));
+    doctorCheck(
+      "embedding freshness",
+      false,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   try {
-    const rows = db.prepare(`
+    const rows = db
+      .prepare(
+        `
       SELECT model, embed_fingerprint AS fingerprint, COUNT(DISTINCT hash) AS docs, COUNT(*) AS chunks
       FROM content_vectors
       GROUP BY model, embed_fingerprint
       ORDER BY chunks DESC, model, embed_fingerprint
-    `).all() as { model: string; fingerprint: string; docs: number; chunks: number }[];
-    const uniqueFingerprints = new Set(rows.map(row => row.fingerprint));
-    const offCurrent = rows.filter(row => row.model === embedModel && row.fingerprint !== fingerprint);
-    const ok = rows.length === 0 || (uniqueFingerprints.size === 1 && rows[0]?.fingerprint === fingerprint && offCurrent.length === 0);
+    `,
+      )
+      .all() as {
+      model: string;
+      fingerprint: string;
+      docs: number;
+      chunks: number;
+    }[];
+    const uniqueFingerprints = new Set(rows.map((row) => row.fingerprint));
+    const offCurrent = rows.filter(
+      (row) => row.model === embedModel && row.fingerprint !== fingerprint,
+    );
+    const ok =
+      rows.length === 0 ||
+      (uniqueFingerprints.size === 1 &&
+        rows[0]?.fingerprint === fingerprint &&
+        offCurrent.length === 0);
     const currentDocs = rows
-      .filter(row => row.model === embedModel && row.fingerprint === fingerprint)
+      .filter(
+        (row) => row.model === embedModel && row.fingerprint === fingerprint,
+      )
       .reduce((sum, row) => sum + row.docs, 0);
-    const otherDocs = rows.reduce((sum, row) => sum + row.docs, 0) - currentDocs;
-    const groups = rows.map(row => {
-      const label = row.fingerprint === fingerprint ? "current" : (row.fingerprint || "legacy");
-      return `${shortModelName(row.model)}:${label} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`;
-    }).join("; ");
-    const namedFingerprintRows = rows.filter(row => row.fingerprint);
-    const namedFingerprints = [...new Set(namedFingerprintRows.map(row => row.fingerprint))];
+    const otherDocs =
+      rows.reduce((sum, row) => sum + row.docs, 0) - currentDocs;
+    const groups = rows
+      .map((row) => {
+        const label =
+          row.fingerprint === fingerprint
+            ? "current"
+            : row.fingerprint || "legacy";
+        return `${shortModelName(row.model)}:${label} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`;
+      })
+      .join("; ");
+    const namedFingerprintRows = rows.filter((row) => row.fingerprint);
+    const namedFingerprints = [
+      ...new Set(namedFingerprintRows.map((row) => row.fingerprint)),
+    ];
     if (namedFingerprints.length > 1) {
       const namedGroups = namedFingerprintRows
-        .map(row => `${row.fingerprint}${row.fingerprint === fingerprint ? " (current)" : ""}: ${shortModelName(row.model)} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`)
+        .map(
+          (row) =>
+            `${row.fingerprint}${row.fingerprint === fingerprint ? " (current)" : ""}: ${shortModelName(row.model)} ${formatCount(row.docs)} docs/${formatCount(row.chunks)} chunks`,
+        )
         .join("; ");
-      doctorCheck("mixed named embedding fingerprints", false, `content_vectors contains ${namedFingerprints.length} named fingerprints: ${namedGroups}. Next: \`qmd embed\` or \`qmd embed --force\``);
-      nextSteps.push("Run `qmd embed` to converge mixed named embedding fingerprints; use `qmd embed --force` if old named fingerprints or vector sample mismatches remain.");
+      doctorCheck(
+        "mixed named embedding fingerprints",
+        false,
+        `content_vectors contains ${namedFingerprints.length} named fingerprints: ${namedGroups}. Next: \`qmd embed\` or \`qmd embed --force\``,
+      );
+      nextSteps.push(
+        "Run `qmd embed` to converge mixed named embedding fingerprints; use `qmd embed --force` if old named fingerprints or vector sample mismatches remain.",
+      );
     }
-    const details = rows.length === 0
-      ? `no vectors yet; current fingerprint ${fingerprint}`
-      : ok
-        ? `${formatCount(currentDocs)} docs on current fingerprint (${fingerprint})`
-        : `${formatCount(currentDocs)} docs current, ${formatCount(otherDocs)} docs legacy/stale. ${groups}. Next: \`qmd embed\``;
+    const details =
+      rows.length === 0
+        ? `no vectors yet; current fingerprint ${fingerprint}`
+        : ok
+          ? `${formatCount(currentDocs)} docs on current fingerprint (${fingerprint})`
+          : `${formatCount(currentDocs)} docs current, ${formatCount(otherDocs)} docs legacy/stale. ${groups}. Next: \`qmd embed\``;
     doctorCheck("embedding fingerprints", ok, details);
     if (!ok) {
-      nextSteps.push("Run `qmd embed` to migrate active documents to the current embedding fingerprint; use `qmd embed --force` if vector samples still fail afterward.");
+      nextSteps.push(
+        "Run `qmd embed` to migrate active documents to the current embedding fingerprint; use `qmd embed --force` if vector samples still fail afterward.",
+      );
     }
   } catch (error) {
-    doctorCheck("embedding fingerprints", false, error instanceof Error ? error.message : String(error));
+    doctorCheck(
+      "embedding fingerprints",
+      false,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   try {
-    const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
-    doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
+    const vectorSample = await checkEmbeddingVectorSamples(
+      db,
+      embedModel,
+      fingerprint,
+    );
+    doctorCheck(
+      "embedding vector sample",
+      vectorSample.ok,
+      vectorSample.details,
+    );
     if (!vectorSample.ok) {
-      nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
+      nextSteps.push(
+        "Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.",
+      );
     }
   } catch (error) {
-    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
-    doctorCheck("embedding vector sample", false, `${message}; rebuild with \`qmd embed --force\``);
-    nextSteps.push("Run `qmd embed --force` to rebuild existing vectors, then rerun `qmd doctor`.");
+    const message =
+      error instanceof Error
+        ? sanitizeDiagnosticMessage(error.message)
+        : sanitizeDiagnosticMessage(String(error));
+    doctorCheck(
+      "embedding vector sample",
+      false,
+      `${message}; rebuild with \`qmd embed --force\``,
+    );
+    nextSteps.push(
+      "Run `qmd embed --force` to rebuild existing vectors, then rerun `qmd doctor`.",
+    );
   }
 
   const steps = normalizedDoctorNextSteps(nextSteps);
   if (steps.length > 0) {
-    console.log(`\n${c.bold}Recommended next step${steps.length === 1 ? "" : "s"}${c.reset}`);
+    console.log(
+      `\n${c.bold}Recommended next step${steps.length === 1 ? "" : "s"}${c.reset}`,
+    );
     for (const step of steps) {
       console.log(`  - ${step}`);
     }
@@ -4090,7 +5309,9 @@ async function showDoctor(): Promise<void> {
 }
 
 function printDoctorHint(): void {
-  console.error("If qmd still behaves unexpectedly, run 'qmd doctor' for diagnostics.");
+  console.error(
+    "If qmd still behaves unexpectedly, run 'qmd doctor' for diagnostics.",
+  );
 }
 
 function exitWithError(error: unknown, code = 1): never {
@@ -4117,7 +5338,10 @@ async function showVersion(): Promise<void> {
 
   let commit = "";
   try {
-    commit = execSync(`git -C ${scriptDir} rev-parse --short HEAD`, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    commit = execSync(`git -C ${scriptDir} rev-parse --short HEAD`, {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
   } catch {
     // Not a git repo or git not available
   }
@@ -4129,10 +5353,11 @@ async function showVersion(): Promise<void> {
 // Main CLI - only run if this is the main module
 const __filename = fileURLToPath(import.meta.url);
 const argv1 = process.argv[1];
-const isMain = argv1 === __filename
-  || argv1?.endsWith("/qmd.ts")
-  || argv1?.endsWith("/qmd.js")
-  || (argv1 != null && realpathSync(argv1) === __filename);
+const isMain =
+  argv1 === __filename ||
+  argv1?.endsWith("/qmd.ts") ||
+  argv1?.endsWith("/qmd.js") ||
+  (argv1 != null && realpathSync(argv1) === __filename);
 if (isMain) {
   // Flip to production mode only when this module is executed as the CLI
   // entrypoint, not when imported for its exports. Tests must set INDEX_PATH
@@ -4156,11 +5381,15 @@ if (isMain) {
     console.log("");
     console.log("Commands:");
     console.log("  show                 Print the QMD skill");
-    console.log("  install              Install QMD skill into ./.agents/skills/qmd");
+    console.log(
+      "  install              Install QMD skill into ./.agents/skills/qmd",
+    );
     console.log("");
     console.log("Options:");
     console.log("  --global             Install into ~/.agents/skills/qmd");
-    console.log("  --yes                Also create the .claude/skills/qmd symlink");
+    console.log(
+      "  --yes                Also create the .claude/skills/qmd symlink",
+    );
     console.log("  -f, --force          Replace existing install or symlink");
     process.exit(0);
   }
@@ -4177,8 +5406,12 @@ if (isMain) {
         console.error("Usage: qmd context <add|list|rm>");
         console.error("");
         console.error("Commands:");
-        console.error("  qmd context add [path] \"text\"  - Add context (defaults to current dir)");
-        console.error("  qmd context add / \"text\"       - Add global context to all collections");
+        console.error(
+          '  qmd context add [path] "text"  - Add context (defaults to current dir)',
+        );
+        console.error(
+          '  qmd context add / "text"       - Add global context to all collections',
+        );
         console.error("  qmd context list                - List all contexts");
         console.error("  qmd context rm <path>           - Remove context");
         process.exit(1);
@@ -4187,17 +5420,27 @@ if (isMain) {
       switch (subcommand) {
         case "add": {
           if (cli.args.length < 2) {
-            console.error("Usage: qmd context add [path] \"text\"");
+            console.error('Usage: qmd context add [path] "text"');
             console.error("");
             console.error("Examples:");
-            console.error("  qmd context add \"Context for current directory\"");
-            console.error("  qmd context add . \"Context for current directory\"");
-            console.error("  qmd context add /subfolder \"Context for subfolder\"");
-            console.error("  qmd context add / \"Global context for all collections\"");
+            console.error('  qmd context add "Context for current directory"');
+            console.error(
+              '  qmd context add . "Context for current directory"',
+            );
+            console.error(
+              '  qmd context add /subfolder "Context for subfolder"',
+            );
+            console.error(
+              '  qmd context add / "Global context for all collections"',
+            );
             console.error("");
             console.error("  Using virtual paths:");
-            console.error("  qmd context add qmd://journals/ \"Context for entire journals collection\"");
-            console.error("  qmd context add qmd://journals/2024 \"Context for 2024 journals\"");
+            console.error(
+              '  qmd context add qmd://journals/ "Context for entire journals collection"',
+            );
+            console.error(
+              '  qmd context add qmd://journals/2024 "Context for 2024 journals"',
+            );
             process.exit(1);
           }
 
@@ -4205,7 +5448,7 @@ if (isMain) {
           let contextText: string;
 
           // Check if first arg looks like a path or if it's the context text
-          const firstArg = cli.args[1] || '';
+          const firstArg = cli.args[1] || "";
           const secondArg = cli.args[2];
 
           if (secondArg) {
@@ -4250,28 +5493,55 @@ if (isMain) {
 
     case "get": {
       if (!cli.args[0]) {
-        console.error("Usage: qmd get <filepath>[:from[:count]] [--from <line>] [-l <lines>] [--no-line-numbers] [--full-path]");
+        console.error(
+          "Usage: qmd get <filepath>[:from[:count]] [--from <line>] [-l <lines>] [--no-line-numbers] [--full-path]",
+        );
         process.exit(1);
       }
-      const fromLine = cli.values.from ? parseInt(cli.values.from as string, 10) : undefined;
-      const maxLines = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
+      const fromLine = cli.values.from
+        ? parseInt(cli.values.from as string, 10)
+        : undefined;
+      const maxLines = cli.values.l
+        ? parseInt(cli.values.l as string, 10)
+        : undefined;
       // Line numbers default ON for get; opt out with --no-line-numbers.
       const getLineNumbers = !cli.values["no-line-numbers"];
-      getDocument(cli.args[0], fromLine, maxLines, getLineNumbers, !!cli.values["full-path"]);
+      getDocument(
+        cli.args[0],
+        fromLine,
+        maxLines,
+        getLineNumbers,
+        !!cli.values["full-path"],
+      );
       break;
     }
 
     case "multi-get": {
       if (!cli.args[0]) {
-        console.error("Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--no-line-numbers] [--full-path] [--format json|csv|md|xml|files]");
-        console.error("  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list");
+        console.error(
+          "Usage: qmd multi-get <pattern> [-l <lines>] [--max-bytes <bytes>] [--no-line-numbers] [--full-path] [--format json|csv|md|xml|files]",
+        );
+        console.error(
+          "  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list",
+        );
         process.exit(1);
       }
-      const maxLinesMulti = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
-      const maxBytes = cli.values["max-bytes"] ? parseInt(cli.values["max-bytes"] as string, 10) : DEFAULT_MULTI_GET_MAX_BYTES;
+      const maxLinesMulti = cli.values.l
+        ? parseInt(cli.values.l as string, 10)
+        : undefined;
+      const maxBytes = cli.values["max-bytes"]
+        ? parseInt(cli.values["max-bytes"] as string, 10)
+        : DEFAULT_MULTI_GET_MAX_BYTES;
       // Line numbers default ON for multi-get; opt out with --no-line-numbers.
       const mgLineNumbers = !cli.values["no-line-numbers"];
-      multiGet(cli.args[0], maxLinesMulti, maxBytes, cli.opts.format, mgLineNumbers, !!cli.values["full-path"]);
+      multiGet(
+        cli.args[0],
+        maxLinesMulti,
+        maxBytes,
+        cli.opts.format,
+        mgLineNumbers,
+        !!cli.values["full-path"],
+      );
       break;
     }
 
@@ -4290,8 +5560,9 @@ if (isMain) {
 
         case "add": {
           const pwd = cli.args[1] || getPwd();
-          const resolvedPwd = pwd === '.' ? getPwd() : getRealPath(resolve(pwd));
-          const globPattern = cli.values.mask as string || DEFAULT_GLOB;
+          const resolvedPwd =
+            pwd === "." ? getPwd() : getRealPath(resolve(pwd));
+          const globPattern = (cli.values.mask as string) || DEFAULT_GLOB;
           const name = cli.values.name as string | undefined;
 
           await collectionAdd(resolvedPwd, globPattern, name);
@@ -4302,7 +5573,9 @@ if (isMain) {
         case "rm": {
           if (!cli.args[1]) {
             console.error("Usage: qmd collection remove <name>");
-            console.error("  Use 'qmd collection list' to see available collections");
+            console.error(
+              "  Use 'qmd collection list' to see available collections",
+            );
             process.exit(1);
           }
           collectionRemove(cli.args[1]);
@@ -4313,7 +5586,9 @@ if (isMain) {
         case "mv": {
           if (!cli.args[1] || !cli.args[2]) {
             console.error("Usage: qmd collection rename <old-name> <new-name>");
-            console.error("  Use 'qmd collection list' to see available collections");
+            console.error(
+              "  Use 'qmd collection list' to see available collections",
+            );
             process.exit(1);
           }
           collectionRename(cli.args[1], cli.args[2]);
@@ -4323,14 +5598,17 @@ if (isMain) {
         case "set-update":
         case "update-cmd": {
           const name = cli.args[1];
-          const cmd = cli.args.slice(2).join(' ') || null;
+          const cmd = cli.args.slice(2).join(" ") || null;
           if (!name) {
             console.error("Usage: qmd collection update-cmd <name> [command]");
-            console.error("  Set the command to run before indexing (e.g., 'git pull')");
+            console.error(
+              "  Set the command to run before indexing (e.g., 'git pull')",
+            );
             console.error("  Omit command to clear it");
             process.exit(1);
           }
-          const { updateCollectionSettings, getCollection } = await import("../collections.js");
+          const { updateCollectionSettings, getCollection } =
+            await import("../collections.js");
           const col = getCollection(name);
           if (!col) {
             console.error(`Collection not found: ${name}`);
@@ -4350,18 +5628,23 @@ if (isMain) {
           const name = cli.args[1];
           if (!name) {
             console.error(`Usage: qmd collection ${subcommand} <name>`);
-            console.error(`  ${subcommand === 'include' ? 'Include' : 'Exclude'} collection in default queries`);
+            console.error(
+              `  ${subcommand === "include" ? "Include" : "Exclude"} collection in default queries`,
+            );
             process.exit(1);
           }
-          const { updateCollectionSettings, getCollection } = await import("../collections.js");
+          const { updateCollectionSettings, getCollection } =
+            await import("../collections.js");
           const col = getCollection(name);
           if (!col) {
             console.error(`Collection not found: ${name}`);
             process.exit(1);
           }
-          const include = subcommand === 'include';
+          const include = subcommand === "include";
           updateCollectionSettings(name, { includeByDefault: include });
-          console.log(`✓ Collection '${name}' ${include ? 'included in' : 'excluded from'} default queries`);
+          console.log(
+            `✓ Collection '${name}' ${include ? "included in" : "excluded from"} default queries`,
+          );
           break;
         }
 
@@ -4381,7 +5664,9 @@ if (isMain) {
           console.log(`Collection: ${name}`);
           console.log(`  Path:     ${col.path}`);
           console.log(`  Pattern:  ${col.pattern}`);
-          console.log(`  Include:  ${col.includeByDefault !== false ? 'yes (default)' : 'no'}`);
+          console.log(
+            `  Include:  ${col.includeByDefault !== false ? "yes (default)" : "no"}`,
+          );
           if (col.update) {
             console.log(`  Update:   ${col.update}`);
           }
@@ -4402,9 +5687,13 @@ if (isMain) {
           console.log("  remove <name>             Remove a collection");
           console.log("  rename <old> <new>        Rename a collection");
           console.log("  show <name>               Show collection details");
-          console.log("  update-cmd <name> [cmd]   Set pre-update command (e.g., 'git pull')");
+          console.log(
+            "  update-cmd <name> [cmd]   Set pre-update command (e.g., 'git pull')",
+          );
           console.log("  include <name>            Include in default queries");
-          console.log("  exclude <name>            Exclude from default queries");
+          console.log(
+            "  exclude <name>            Exclude from default queries",
+          );
           console.log("");
           console.log("Examples:");
           console.log("  qmd collection add ~/notes --name notes");
@@ -4431,17 +5720,22 @@ if (isMain) {
           const { resolve: resolvePath } = await import("node:path");
           const inboxDir = getInboxDir();
           try {
-            const files = readdirSync(inboxDir).filter((f: string) => f.endsWith('.md') || f.endsWith('.txt'));
+            const files = readdirSync(inboxDir).filter(
+              (f: string) => f.endsWith(".md") || f.endsWith(".txt"),
+            );
             if (files.length === 0) {
               console.log("Inbox is empty.");
               break;
             }
-            console.log(`Inbox (${files.length} file${files.length === 1 ? '' : 's'}):`);
+            console.log(
+              `Inbox (${files.length} file${files.length === 1 ? "" : "s"}):`,
+            );
             for (const f of files) {
               const fp = resolvePath(inboxDir, f);
               const s = statSync(fp);
               const age = Math.floor((Date.now() - s.mtimeMs) / 86400000);
-              const size = s.size < 1024 ? `${s.size}B` : `${Math.round(s.size / 1024)}KB`;
+              const size =
+                s.size < 1024 ? `${s.size}B` : `${Math.round(s.size / 1024)}KB`;
               console.log(`  ${f}  ${size}  ${age}d ago`);
             }
           } catch {
@@ -4456,15 +5750,19 @@ if (isMain) {
           const collection = cli.args[2];
           const targetPath = cli.values.path as string | undefined;
           if (!file || !collection) {
-            console.error("Usage: qmd inbox move <file> <collection> [--path <subpath>]");
+            console.error(
+              "Usage: qmd inbox move <file> <collection> [--path <subpath>]",
+            );
             console.error("");
             console.error("  Move a file from inbox to a target collection.");
-            console.error("  Use 'qmd inbox list' to see files, 'qmd collection list' for collections.");
+            console.error(
+              "  Use 'qmd inbox list' to see files, 'qmd collection list' for collections.",
+            );
             process.exit(1);
           }
           try {
             const s = await getStore();
-            const result = await s.moveInboxFile(file, collection, targetPath);
+            const result = await moveInboxFile(s, file, collection, targetPath);
             console.log(`Moved ${result.file} to ${result.to}`);
           } catch (err) {
             exitWithError(err);
@@ -4475,11 +5773,13 @@ if (isMain) {
         case "clean": {
           const { readdirSync: readdir, unlinkSync } = await import("node:fs");
           const { resolve: resolvePath2 } = await import("node:path");
-          const days = parseInt(cli.values.days as string || "30", 10);
+          const days = parseInt((cli.values.days as string) || "30", 10);
           const inboxDir = getInboxDir();
           let removed = 0;
           try {
-            const files = readdir(inboxDir).filter((f: string) => f.endsWith('.md') || f.endsWith('.txt'));
+            const files = readdir(inboxDir).filter(
+              (f: string) => f.endsWith(".md") || f.endsWith(".txt"),
+            );
             const cutoff = Date.now() - days * 86400000;
             for (const f of files) {
               const fp = resolvePath2(inboxDir, f);
@@ -4489,13 +5789,19 @@ if (isMain) {
                 removed++;
               }
             }
-          } catch { /* inbox dir may not exist yet */ }
-          console.log(`Cleaned ${removed} file${removed === 1 ? '' : 's'} older than ${days} days from inbox.`);
+          } catch {
+            /* inbox dir may not exist yet */
+          }
+          console.log(
+            `Cleaned ${removed} file${removed === 1 ? "" : "s"} older than ${days} days from inbox.`,
+          );
           if (removed > 0) {
             try {
               const s = await getStore();
-              await s.update({ collections: ["inbox"] });
-            } catch { /* non-fatal */ }
+              await updateCollections();
+            } catch {
+              /* non-fatal */
+            }
           }
           break;
         }
@@ -4505,8 +5811,12 @@ if (isMain) {
           console.error("");
           console.error("Commands:");
           console.error("  list                  List files in inbox");
-          console.error("  move <file> <coll>    Move file from inbox to collection");
-          console.error("  clean [--days N]      Remove files older than N days (default: 30)");
+          console.error(
+            "  move <file> <coll>    Move file from inbox to collection",
+          );
+          console.error(
+            "  clean [--days N]      Remove files older than N days (default: 30)",
+          );
           process.exit(1);
         }
       }
@@ -4535,18 +5845,30 @@ if (isMain) {
 
     case "embed":
       try {
-        const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
-        const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
-        const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
+        const maxDocsPerBatch = parseEmbedBatchOption(
+          "maxDocsPerBatch",
+          cli.values["max-docs-per-batch"],
+        );
+        const maxBatchMb = parseEmbedBatchOption(
+          "maxBatchBytes",
+          cli.values["max-batch-mb"],
+        );
+        const embedChunkStrategy = parseChunkStrategy(
+          cli.values["chunk-strategy"],
+        );
         // Validate -c against configured collections before dispatching, so a
         // typo errors with "Collection not found: X" instead of silently
         // reporting success because no pending docs match a nonexistent name.
         // embed operates on a single collection; only the first value is used.
-        const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
+        const embedValidatedCollections = resolveCollectionFilter(
+          cli.opts.collection,
+          false,
+        );
         const embedCollection = embedValidatedCollections[0];
         await vectorIndex(resolveEmbedModelForCli(), !!cli.values.force, {
           maxDocsPerBatch,
-          maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
+          maxBatchBytes:
+            maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
         });
@@ -4556,7 +5878,8 @@ if (isMain) {
       break;
 
     case "pull": {
-      const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
+      const refresh =
+        cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
       const activeModels = resolveModelsForCli();
       const models = [
         activeModels.embed,
@@ -4609,17 +5932,23 @@ if (isMain) {
     case "bench": {
       const fixturePath = cli.args[0];
       if (!fixturePath) {
-        console.error("Usage: qmd bench <fixture.json> [--json] [-c collection]");
+        console.error(
+          "Usage: qmd bench <fixture.json> [--json] [-c collection]",
+        );
         console.error("");
         console.error("Run search quality benchmarks against a fixture file.");
-        console.error("See src/bench/fixtures/example.json for the fixture format.");
+        console.error(
+          "See src/bench/fixtures/example.json for the fixture format.",
+        );
         process.exit(1);
       }
       const { runBenchmark } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
       await runBenchmark(fixturePath, {
         json: !!cli.values.json,
-        collection: Array.isArray(benchCollection) ? benchCollection[0] : benchCollection,
+        collection: Array.isArray(benchCollection)
+          ? benchCollection[0]
+          : benchCollection,
         dbPath: getDbPath(),
         configPath: configExists() ? getConfigPath() : undefined,
       });
@@ -4634,7 +5963,9 @@ if (isMain) {
           const token = cli.values.token as string | undefined;
           const name = (cli.values.name as string) || "default";
           if (!url || !token) {
-            console.error("Usage: qmd cloud login <url> --token <token> [--name <name>]");
+            console.error(
+              "Usage: qmd cloud login <url> --token <token> [--name <name>]",
+            );
             console.error("");
             console.error("  Connect to a Turso database.");
             console.error("  URL format: libsql://<db-name>-<org>.turso.io");
@@ -4647,14 +5978,19 @@ if (isMain) {
             console.error(`Connection failed: ${validation.error}`);
             process.exit(1);
           }
-          const config: CloudConfig = loadCloudConfig() ?? { default_remote: name, remotes: {} };
+          const config: CloudConfig = loadCloudConfig() ?? {
+            default_remote: name,
+            remotes: {},
+          };
           config.remotes[name] = remote;
           if (Object.keys(config.remotes).length === 1) {
             config.default_remote = name;
           }
           saveCloudConfig(config);
           console.log(`${c.green}Connected${c.reset} to ${url}`);
-          console.log(`${c.green}Config saved${c.reset} to ${getCloudConfigPath()}`);
+          console.log(
+            `${c.green}Config saved${c.reset} to ${getCloudConfigPath()}`,
+          );
           if (validation.serverInfo) {
             console.log(`Server: ${validation.serverInfo}`);
           }
@@ -4682,7 +6018,9 @@ if (isMain) {
           const statusConfig = loadCloudConfig();
           if (!statusConfig || Object.keys(statusConfig.remotes).length === 0) {
             console.log("No cloud remotes configured.");
-            console.log("Run 'qmd cloud login <url> --token <token>' to get started.");
+            console.log(
+              "Run 'qmd cloud login <url> --token <token>' to get started.",
+            );
             break;
           }
           for (const [rname, remote] of Object.entries(statusConfig.remotes)) {
@@ -4691,7 +6029,9 @@ if (isMain) {
             console.log(`${marker} ${c.bold}${rname}${c.reset}: ${remote.url}`);
             const v = await validateConnection(remote);
             if (v.ok) {
-              console.log(`  Status: ${c.green}connected${c.reset}${v.serverInfo ? ` (${v.serverInfo})` : ""}`);
+              console.log(
+                `  Status: ${c.green}connected${c.reset}${v.serverInfo ? ` (${v.serverInfo})` : ""}`,
+              );
             } else {
               console.log(`  Status: ${c.red}error${c.reset} — ${v.error}`);
             }
@@ -4702,13 +6042,19 @@ if (isMain) {
         case "push": {
           const pushConfig = loadCloudConfig();
           if (!pushConfig || Object.keys(pushConfig.remotes).length === 0) {
-            console.error("No cloud remote configured. Run 'qmd cloud login' first.");
+            console.error(
+              "No cloud remote configured. Run 'qmd cloud login' first.",
+            );
             process.exit(1);
           }
-          const pushRemoteName = resolveRemoteName(cli.values.name as string | undefined);
+          const pushRemoteName = resolveRemoteName(
+            cli.values.name as string | undefined,
+          );
           const pushRemote = pushConfig.remotes[pushRemoteName];
           if (!pushRemote) {
-            console.error(`Remote '${pushRemoteName}' not found. Run 'qmd cloud login' first.`);
+            console.error(
+              `Remote '${pushRemoteName}' not found. Run 'qmd cloud login' first.`,
+            );
             process.exit(1);
           }
           try {
@@ -4718,12 +6064,16 @@ if (isMain) {
             const pushResult = await pushToRemote(pushStore.db, pushClient);
             pushClient.close();
             for (const [tname, info] of Object.entries(pushResult.tables)) {
-              console.log(`  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`);
+              console.log(
+                `  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`,
+              );
             }
             const pushSec = (pushResult.durationMs / 1000).toFixed(1);
             console.log(`${c.green}Push complete${c.reset} (${pushSec}s)`);
           } catch (err) {
-            console.error(`Push failed: ${err instanceof Error ? err.message : String(err)}`);
+            console.error(
+              `Push failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
             process.exit(1);
           }
           break;
@@ -4732,34 +6082,48 @@ if (isMain) {
         case "pull": {
           const pullConfig = loadCloudConfig();
           if (!pullConfig || Object.keys(pullConfig.remotes).length === 0) {
-            console.error("No cloud remote configured. Run 'qmd cloud login' first.");
+            console.error(
+              "No cloud remote configured. Run 'qmd cloud login' first.",
+            );
             process.exit(1);
           }
-          const pullRemoteName = resolveRemoteName(cli.values.name as string | undefined);
+          const pullRemoteName = resolveRemoteName(
+            cli.values.name as string | undefined,
+          );
           const pullRemote = pullConfig.remotes[pullRemoteName];
           if (!pullRemote) {
-            console.error(`Remote '${pullRemoteName}' not found. Run 'qmd cloud login' first.`);
+            console.error(
+              `Remote '${pullRemoteName}' not found. Run 'qmd cloud login' first.`,
+            );
             process.exit(1);
           }
           try {
             const pullClient = await createCloudClient(pullRemote);
             const pullDbPath = getDbPath();
             const pullForce = !!cli.values.force;
-            console.log(`Pulling from ${pullRemoteName} (${pullRemote.url})...`);
-            const pullResult = await pullFromRemote(pullClient, pullDbPath, { force: pullForce });
+            console.log(
+              `Pulling from ${pullRemoteName} (${pullRemote.url})...`,
+            );
+            const pullResult = await pullFromRemote(pullClient, pullDbPath, {
+              force: pullForce,
+            });
             pullClient.close();
             if (!pullResult.swapped) {
               console.log(`${c.green}Already up to date.${c.reset}`);
             } else {
               for (const [tname, info] of Object.entries(pullResult.tables)) {
-                console.log(`  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`);
+                console.log(
+                  `  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`,
+                );
               }
               const pullSec = (pullResult.durationMs / 1000).toFixed(1);
               console.log(`${c.green}Pull complete${c.reset} (${pullSec}s)`);
               closeDb();
             }
           } catch (err) {
-            console.error(`Pull failed: ${err instanceof Error ? err.message : String(err)}`);
+            console.error(
+              `Pull failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
             process.exit(1);
           }
           break;
@@ -4769,11 +6133,19 @@ if (isMain) {
           console.error("Usage: qmd cloud <login|logout|status|push|pull>");
           console.error("");
           console.error("Commands:");
-          console.error("  login <url> --token <token>  Connect to Turso remote");
+          console.error(
+            "  login <url> --token <token>  Connect to Turso remote",
+          );
           console.error("  logout [--name <name>]       Remove a remote");
-          console.error("  status                       Show cloud config and connectivity");
-          console.error("  push [--name <name>]         Push local index to remote");
-          console.error("  pull [--name <name>] [--force] Pull remote index to local");
+          console.error(
+            "  status                       Show cloud config and connectivity",
+          );
+          console.error(
+            "  push [--name <name>]         Push local index to remote",
+          );
+          console.error(
+            "  pull [--name <name>] [--force] Pull remote index to local",
+          );
           process.exit(1);
         }
       }
@@ -4817,7 +6189,9 @@ if (isMain) {
             const existingPid = parseInt(readFileSync(pidPath, "utf-8").trim());
             try {
               process.kill(existingPid, 0); // alive?
-              console.error(`Already running (PID ${existingPid}). Run 'qmd mcp stop' first.`);
+              console.error(
+                `Already running (PID ${existingPid}). Run 'qmd mcp stop' first.`,
+              );
               process.exit(1);
             } catch {
               // Stale PID file — continue
@@ -4828,9 +6202,29 @@ if (isMain) {
           const logPath = resolve(cacheDir, "mcp.log");
           const logFd = openSync(logPath, "w"); // truncate — fresh log per daemon run
           const selfPath = fileURLToPath(import.meta.url);
-          const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
+          const indexArgs = cli.values.index
+            ? ["--index", String(cli.values.index)]
+            : [];
           const spawnArgs = selfPath.endsWith(".ts")
-            ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port)]
+            ? [
+                "--import",
+                pathJoin(
+                  dirname(selfPath),
+                  "..",
+                  "..",
+                  "node_modules",
+                  "tsx",
+                  "dist",
+                  "esm",
+                  "index.mjs",
+                ),
+                selfPath,
+                ...indexArgs,
+                "mcp",
+                "--http",
+                "--port",
+                String(port),
+              ]
             : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port)];
           const child = nodeSpawn(process.execPath, spawnArgs, {
             stdio: ["ignore", logFd, logFd],
@@ -4840,7 +6234,9 @@ if (isMain) {
           closeSync(logFd); // parent's copy; child inherited the fd
 
           writeFileSync(pidPath, String(child.pid));
-          console.log(`Started on http://localhost:${port}/mcp (PID ${child.pid})`);
+          console.log(
+            `Started on http://localhost:${port}/mcp (PID ${child.pid})`,
+          );
           console.log(`Logs: ${logPath}`);
           process.exit(0);
         }
@@ -4853,8 +6249,15 @@ if (isMain) {
         try {
           await startMcpHttpServer(port, { dbPath: getDbPath() });
         } catch (e: unknown) {
-          if (typeof e === "object" && e !== null && "code" in e && e.code === "EADDRINUSE") {
-            console.error(`Port ${port} already in use. Try a different port with --port.`);
+          if (
+            typeof e === "object" &&
+            e !== null &&
+            "code" in e &&
+            e.code === "EADDRINUSE"
+          ) {
+            console.error(
+              `Port ${port} already in use. Try a different port with --port.`,
+            );
             process.exit(1);
           }
           throw e;
@@ -4872,11 +6275,19 @@ if (isMain) {
         if (cli.values.help || cli.args[0] === "help") {
           showSkillsHelp();
         } else {
-          runSkillsCommand(cli.args, Boolean(cli.values.json), Boolean(cli.values.full), Boolean(cli.values.all));
+          runSkillsCommand(
+            cli.args,
+            Boolean(cli.values.json),
+            Boolean(cli.values.full),
+            Boolean(cli.values.all),
+          );
         }
       } catch (error) {
         if (cli.values.json) {
-          outputSkillsJson({ success: false, error: error instanceof Error ? error.message : String(error) });
+          outputSkillsJson({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
         } else {
           console.error(error instanceof Error ? error.message : String(error));
         }
@@ -4895,7 +6306,11 @@ if (isMain) {
 
         case "install": {
           try {
-            await installSkill(Boolean(cli.values.global), Boolean(cli.values.force), Boolean(cli.values.yes));
+            await installSkill(
+              Boolean(cli.values.global),
+              Boolean(cli.values.force),
+              Boolean(cli.values.yes),
+            );
           } catch (error) {
             exitWithError(error);
           }
@@ -4908,12 +6323,20 @@ if (isMain) {
           console.log("");
           console.log("Commands:");
           console.log("  show                 Print the QMD skill");
-          console.log("  install              Install QMD skill into ./.agents/skills/qmd");
+          console.log(
+            "  install              Install QMD skill into ./.agents/skills/qmd",
+          );
           console.log("");
           console.log("Options:");
-          console.log("  --global             Install into ~/.agents/skills/qmd");
-          console.log("  --yes                Also create the .claude/skills/qmd symlink");
-          console.log("  -f, --force          Replace existing install or symlink");
+          console.log(
+            "  --global             Install into ~/.agents/skills/qmd",
+          );
+          console.log(
+            "  --yes                Also create the .claude/skills/qmd symlink",
+          );
+          console.log(
+            "  -f, --force          Replace existing install or symlink",
+          );
           process.exit(0);
         }
 
@@ -4931,12 +6354,16 @@ if (isMain) {
 
       // 1. Clear llm_cache
       const cacheCount = deleteLLMCache(db);
-      console.log(`${c.green}✓${c.reset} Cleared ${cacheCount} cached API responses`);
+      console.log(
+        `${c.green}✓${c.reset} Cleared ${cacheCount} cached API responses`,
+      );
 
       // 2. Remove orphaned vectors
       const orphanedVecs = cleanupOrphanedVectors(db);
       if (orphanedVecs > 0) {
-        console.log(`${c.green}✓${c.reset} Removed ${orphanedVecs} orphaned embedding chunks`);
+        console.log(
+          `${c.green}✓${c.reset} Removed ${orphanedVecs} orphaned embedding chunks`,
+        );
       } else {
         console.log(`${c.dim}No orphaned embeddings to remove${c.reset}`);
       }
@@ -4944,7 +6371,9 @@ if (isMain) {
       // 3. Remove inactive documents
       const inactiveDocs = deleteInactiveDocuments(db);
       if (inactiveDocs > 0) {
-        console.log(`${c.green}✓${c.reset} Removed ${inactiveDocs} inactive document records`);
+        console.log(
+          `${c.green}✓${c.reset} Removed ${inactiveDocs} inactive document records`,
+        );
       }
 
       // 4. Vacuum to reclaim space
@@ -4968,5 +6397,4 @@ if (isMain) {
       format: cli.opts.format,
     });
   }
-
 } // end if (main module)

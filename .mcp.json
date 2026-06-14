@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "litellm": {
+      "type": "http",
+      "url": "http://100.68.251.84:4001/mcp/",
+      "headers": {
+        "Authorization": "Bearer sk-7mxB80ddfT3RWr8Qwyv4bg"
+      }
+    },
+    "agentmemory": {
+      "command": "npx",
+      "args": ["-y", "@agentmemory/mcp"],
+      "env": {
+        "AGENTMEMORY_URL": "http://100.68.251.84:3111",
+        "AGENTMEMORY_FORCE_PROXY": "1",
+        "AGENTMEMORY_SECRET": "04947c59a231d12ac78122781f222ddf68e3d06ede1c601e5f6d037085e67aed",
+        "ANTHROPIC_API_KEY": "sk-5vemBgTzb5kc429f0n7HTA",
+        "ANTHROPIC_BASE_URL": "http://100.68.251.84:4001/v1",
+        "ANTHROPIC_MODEL": "MiniMax-M2.7-highspeed",
+        "EMBEDDING_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-5vemBgTzb5kc429f0n7HTA",
+        "OPENAI_BASE_URL": "http://100.68.251.84:4001/v1",
+        "OPENAI_EMBEDDING_MODEL": "voyage-code-3",
+        "OPENAI_EMBEDDING_DIMENSIONS": "1024",
+        "GRAPH_EXTRACTION_ENABLED": "true",
+	"AGENTMEMORY_INJECT_CONTEXT": "true",
+	"AGENTMEMORY_AUTO_COMPRESS": "true",
+	"CONSOLIDATION_ENABLED": "true"
+      }
+    }
+  }
+}
