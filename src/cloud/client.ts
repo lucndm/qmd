@@ -2,8 +2,13 @@ import { createClient, type Client, type InValue } from "@libsql/client";
 import type { RemoteConfig } from "./config.js";
 
 export interface CloudClient {
-  execute(sql: string, args?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  batch(statements: { sql: string; args?: unknown[] }[]): Promise<{ rows: Record<string, unknown>[] }[]>;
+  execute(
+    sql: string,
+    args?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[] }>;
+  batch(
+    statements: { sql: string; args?: unknown[] }[],
+  ): Promise<{ rows: Record<string, unknown>[] }[]>;
   close(): void;
 }
 
@@ -14,7 +19,10 @@ interface TokenCache {
 
 let tokenCache: TokenCache | null = null;
 
-export async function resolveDbToken(apiToken: string, hostname: string): Promise<string> {
+export async function resolveDbToken(
+  apiToken: string,
+  hostname: string,
+): Promise<string> {
   if (tokenCache && tokenCache.expires > Date.now()) {
     return tokenCache.token;
   }
@@ -28,19 +36,24 @@ export async function resolveDbToken(apiToken: string, hostname: string): Promis
     const body = await resp.text();
     throw new Error(`Failed to get DB token (${resp.status}): ${body}`);
   }
-  const data = await resp.json() as { jwt: string };
+  const data = (await resp.json()) as { jwt: string };
   tokenCache = { token: data.jwt, expires: Date.now() + 23 * 60 * 60 * 1000 };
   return data.jwt;
 }
 
-async function resolveDbName(apiToken: string, hostname: string): Promise<string> {
+async function resolveDbName(
+  apiToken: string,
+  hostname: string,
+): Promise<string> {
   const resp = await fetch("https://api.turso.tech/v1/databases", {
     headers: { Authorization: `Bearer ${apiToken}` },
   });
   if (!resp.ok) {
     throw new Error(`Failed to list databases (${resp.status})`);
   }
-  const data = await resp.json() as { databases: { Name: string; Hostname: string }[] };
+  const data = (await resp.json()) as {
+    databases: { Name: string; Hostname: string }[];
+  };
   const match = data.databases.find((db) => db.Hostname === hostname);
   if (!match) {
     throw new Error(`No database found matching hostname ${hostname}`);
@@ -48,21 +61,38 @@ async function resolveDbName(apiToken: string, hostname: string): Promise<string
   return match.Name;
 }
 
-export async function createCloudClient(remote: RemoteConfig): Promise<CloudClient> {
+export async function createCloudClient(
+  remote: RemoteConfig,
+): Promise<CloudClient> {
   const url = normalizeUrl(remote.url);
   const hostname = new URL(url).hostname;
-  const authToken = await resolveDbToken(remote.token, hostname);
+
+  // For Turso cloud, resolve JWT via Turso API.
+  // For self-hosted libSQL, use token directly as authToken.
+  const isTurso = hostname.endsWith(".turso.io");
+  const authToken = isTurso
+    ? await resolveDbToken(remote.token, hostname)
+    : remote.token;
+
   const client: Client = createClient({ url, authToken });
   return {
     async execute(sql: string, args?: unknown[]) {
-      const result = await client.execute({ sql, args: args as InValue[] ?? [] });
+      const result = await client.execute({
+        sql,
+        args: (args as InValue[]) ?? [],
+      });
       return { rows: result.rows as Record<string, unknown>[] };
     },
     async batch(statements: { sql: string; args?: unknown[] }[]) {
       const results = await client.batch(
-        statements.map((s) => ({ sql: s.sql, args: s.args as InValue[] ?? [] }))
+        statements.map((s) => ({
+          sql: s.sql,
+          args: (s.args as InValue[]) ?? [],
+        })),
       );
-      return results.map((r) => ({ rows: r.rows as Record<string, unknown>[] }));
+      return results.map((r) => ({
+        rows: r.rows as Record<string, unknown>[],
+      }));
     },
     close() {
       client.close();
@@ -70,7 +100,9 @@ export async function createCloudClient(remote: RemoteConfig): Promise<CloudClie
   };
 }
 
-export async function validateConnection(remote: RemoteConfig): Promise<{ ok: boolean; error?: string; serverInfo?: string }> {
+export async function validateConnection(
+  remote: RemoteConfig,
+): Promise<{ ok: boolean; error?: string; serverInfo?: string }> {
   try {
     const client = await createCloudClient(remote);
     const result = await client.execute("SELECT sqlite_version() as version");
