@@ -65,14 +65,9 @@ export async function createCloudClient(
   remote: RemoteConfig,
 ): Promise<CloudClient> {
   const url = normalizeUrl(remote.url);
-  const hostname = new URL(url).hostname;
-
-  // For Turso cloud, resolve JWT via Turso API.
-  // For self-hosted libSQL, use token directly as authToken.
-  const isTurso = hostname.endsWith(".turso.io");
-  const authToken = isTurso
-    ? await resolveDbToken(remote.token, hostname)
-    : remote.token;
+  // Token works directly for both self-hosted libSQL and Turso cloud.
+  // @libsql/client handles Turso auth tokens natively — no API resolution needed.
+  const authToken = remote.token;
 
   const client: Client = createClient({ url, authToken });
   return {
