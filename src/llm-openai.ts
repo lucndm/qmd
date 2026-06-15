@@ -37,21 +37,39 @@ export class OpenAILLM implements LLM {
     this._rerankModelName = config.rerankModel || "qwen3-reranker-small";
   }
 
-  private resolveModel(requestedModel: string | undefined, defaultModel: string): string {
+  private resolveModel(
+    requestedModel: string | undefined,
+    defaultModel: string,
+  ): string {
     const model = requestedModel ?? defaultModel;
-    if (model.startsWith("hf:") || model.includes("/") || model.includes("GGUF") || model.includes("gguf") || model.includes("embeddinggemma")) {
+    if (
+      model.startsWith("hf:") ||
+      model.includes("/") ||
+      model.includes("GGUF") ||
+      model.includes("gguf") ||
+      model.includes("embeddinggemma")
+    ) {
       return defaultModel;
     }
     return model;
   }
 
-  get embedModelName(): string { return this._embedModelName; }
-  get generateModelName(): string { return this._generateModelName; }
-  get rerankModelName(): string { return this._rerankModelName; }
+  get embedModelName(): string {
+    return this._embedModelName;
+  }
+  get generateModelName(): string {
+    return this._generateModelName;
+  }
+  get rerankModelName(): string {
+    return this._rerankModelName;
+  }
 
   // -- Embeddings ----------------------------------------------------------------
 
-  async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
+  async embed(
+    text: string,
+    options?: EmbedOptions,
+  ): Promise<EmbeddingResult | null> {
     const model = this.resolveModel(options?.model, this._embedModelName);
     const input = stripEmbeddingFormat(text);
     const res = await this.fetch("/v1/embeddings", {
@@ -63,11 +81,14 @@ export class OpenAILLM implements LLM {
       const body = await res.text();
       throw new Error(`embed API error: ${res.status} ${body}`);
     }
-    const data = await res.json() as { data: Array<{ embedding: number[] }> };
+    const data = (await res.json()) as { data: Array<{ embedding: number[] }> };
     return { embedding: data.data[0]!.embedding, model };
   }
 
-  async embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]> {
+  async embedBatch(
+    texts: string[],
+    options?: EmbedOptions,
+  ): Promise<(EmbeddingResult | null)[]> {
     const model = this.resolveModel(options?.model, this._embedModelName);
     const input = texts.map(stripEmbeddingFormat);
     const res = await this.fetch("/v1/embeddings", {
@@ -79,13 +100,16 @@ export class OpenAILLM implements LLM {
       const body = await res.text();
       throw new Error(`embedBatch API error: ${res.status} ${body}`);
     }
-    const data = await res.json() as { data: Array<{ embedding: number[] }> };
+    const data = (await res.json()) as { data: Array<{ embedding: number[] }> };
     return data.data.map((item) => ({ embedding: item.embedding, model }));
   }
 
   // -- Generation ----------------------------------------------------------------
 
-  async generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null> {
+  async generate(
+    prompt: string,
+    options?: GenerateOptions,
+  ): Promise<GenerateResult | null> {
     const model = this.resolveModel(options?.model, this._generateModelName);
     const res = await this.fetch("/v1/chat/completions", {
       model,
@@ -98,7 +122,7 @@ export class OpenAILLM implements LLM {
       const body = await res.text();
       throw new Error(`generate API error: ${res.status} ${body}`);
     }
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       choices: Array<{ message: { content: string | null } }>;
       model: string;
     };
@@ -114,7 +138,11 @@ export class OpenAILLM implements LLM {
 
   async expandQuery(
     query: string,
-    options: { context?: string; includeLexical?: boolean; intent?: string } = {},
+    options: {
+      context?: string;
+      includeLexical?: boolean;
+      intent?: string;
+    } = {},
   ): Promise<Queryable[]> {
     const includeLexical = options.includeLexical ?? true;
     const intent = options.intent;
@@ -124,14 +152,20 @@ export class OpenAILLM implements LLM {
       : `Expand this search query: ${query}\n\nReturn one query per line in format: type: query (where type is lex, vec, or hyde). Do not include any other text.`;
 
     try {
-      const result = await this.generate(prompt, { maxTokens: 600, temperature: 0.7 });
+      const result = await this.generate(prompt, {
+        maxTokens: 600,
+        temperature: 0.7,
+      });
       if (!result) throw new Error("generate returned null");
 
       const queryLower = query.toLowerCase();
-      const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+      const queryTerms = queryLower
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
       const hasQueryTerm = (text: string): boolean => {
         if (queryTerms.length === 0) return true;
-        return queryTerms.some(term => text.toLowerCase().includes(term));
+        return queryTerms.some((term) => text.toLowerCase().includes(term));
       };
 
       const queryables: Queryable[] = result.text
@@ -148,7 +182,9 @@ export class OpenAILLM implements LLM {
         })
         .filter((q): q is Queryable => q !== null);
 
-      const filtered = includeLexical ? queryables : queryables.filter(q => q.type !== "lex");
+      const filtered = includeLexical
+        ? queryables
+        : queryables.filter((q) => q.type !== "lex");
       if (filtered.length > 0) return filtered;
     } catch (e) {
       console.error("expandQuery error:", e);
@@ -160,7 +196,7 @@ export class OpenAILLM implements LLM {
       { type: "lex", text: query },
       { type: "vec", text: query },
     ];
-    return includeLexical ? fallback : fallback.filter(q => q.type !== "lex");
+    return includeLexical ? fallback : fallback.filter((q) => q.type !== "lex");
   }
 
   // -- Reranking -----------------------------------------------------------------
@@ -171,17 +207,17 @@ export class OpenAILLM implements LLM {
     options?: RerankOptions,
   ): Promise<RerankResult> {
     const model = this.resolveModel(options?.model, this._rerankModelName);
-    const res = await this.fetch("/rerank", {
+    const res = await this.fetch("/v1/rerank", {
       model,
       query,
-      documents: documents.map(d => d.text),
+      documents: documents.map((d) => d.text),
       top_n: documents.length,
     });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`rerank API error: ${res.status} ${body}`);
     }
-    const data = await res.json() as {
+    const data = (await res.json()) as {
       results: Array<{ index: number; relevance_score: number }>;
       model: string;
     };
@@ -227,8 +263,11 @@ export class OpenAILLM implements LLM {
   private async fetch(path: string, body: unknown): Promise<Response> {
     const baseUrl = this.config.baseUrl.replace(/\/+$/, "");
     const url = `${baseUrl}${path}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.config.apiKey) headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.config.apiKey)
+      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
     return fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
   }
 
@@ -236,7 +275,8 @@ export class OpenAILLM implements LLM {
     const baseUrl = this.config.baseUrl.replace(/\/+$/, "");
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {};
-    if (this.config.apiKey) headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+    if (this.config.apiKey)
+      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
     return fetch(url, { method: "GET", headers });
   }
 }
