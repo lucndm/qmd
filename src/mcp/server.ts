@@ -7,15 +7,21 @@
  * Follows MCP spec 2025-06-18 for proper response types.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "url";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { WebStandardStreamableHTTPServerTransport }
-  from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "fs";
@@ -37,12 +43,12 @@ import { enableProductionMode } from "../store.js";
 // =============================================================================
 
 type SearchResultItem = {
-  docid: string;  // Short docid (#abc123) for quick reference
+  docid: string; // Short docid (#abc123) for quick reference
   file: string;
   title: string;
   score: number;
   context: string | null;
-  line: number;   // Absolute line in source markdown
+  line: number; // Absolute line in source markdown
   snippet: string;
 };
 
@@ -69,26 +75,39 @@ type StatusResult = {
  */
 function encodeQmdPath(path: string): string {
   // Encode each path segment separately to preserve slashes
-  return path.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 /**
  * Format search results as human-readable text summary
  */
-function formatSearchSummary(results: SearchResultItem[], query: string): string {
+function formatSearchSummary(
+  results: SearchResultItem[],
+  query: string,
+): string {
   if (results.length === 0) {
     return `No results found for "${query}"`;
   }
-  const lines = [`Found ${results.length} result${results.length === 1 ? '' : 's'} for "${query}":\n`];
+  const lines = [
+    `Found ${results.length} result${results.length === 1 ? "" : "s"} for "${query}":\n`,
+  ];
   for (const r of results) {
-    lines.push(`${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`);
+    lines.push(
+      `${r.docid} ${Math.round(r.score * 100)}% ${r.file} - ${r.title}`,
+    );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 function getPackageVersion(): string {
   try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
+    const pkgPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../package.json",
+    );
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
     return pkg.version ?? "unknown";
   } catch {
@@ -111,7 +130,9 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   const lines: string[] = [];
 
   // --- What is this? ---
-  lines.push(`QMD is your local search engine over ${status.totalDocuments} markdown documents.`);
+  lines.push(
+    `QMD is your local search engine over ${status.totalDocuments} markdown documents.`,
+  );
   if (globalCtx) lines.push(`Context: ${globalCtx}`);
 
   // --- What's searchable? ---
@@ -119,18 +140,24 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   // across a dozen collections, and the same info is available on demand via the `status` tool.
   if (status.collections.length > 0) {
     lines.push("");
-    const names = status.collections.map(c => c.name).join(", ");
+    const names = status.collections.map((c) => c.name).join(", ");
     lines.push(`Collections (scope with \`collection\` parameter): ${names}`);
-    lines.push("Call the `status` tool for collection descriptions, paths, and per-collection doc counts.");
+    lines.push(
+      "Call the `status` tool for collection descriptions, paths, and per-collection doc counts.",
+    );
   }
 
   // --- Capability gaps ---
   if (!status.hasVectorIndex) {
     lines.push("");
-    lines.push("Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).");
+    lines.push(
+      "Note: No vector embeddings yet. Run `qmd embed` to enable semantic search (vec/hyde).",
+    );
   } else if (status.needsEmbedding > 0) {
     lines.push("");
-    lines.push(`Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`);
+    lines.push(
+      `Note: ${status.needsEmbedding} documents need embedding. Run \`qmd embed\` to update.`,
+    );
   }
 
   // --- Search tool ---
@@ -138,28 +165,44 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("Search: Use `query` with sub-queries (lex/vec/hyde):");
   lines.push("  - type:'lex' — BM25 keyword search (exact terms, fast)");
   lines.push("  - type:'vec' — semantic vector search (meaning-based)");
-  lines.push("  - type:'hyde' — hypothetical document (write what the answer looks like)");
+  lines.push(
+    "  - type:'hyde' — hypothetical document (write what the answer looks like)",
+  );
   lines.push("");
-  lines.push("  Always provide `intent` on every search call to disambiguate and improve snippets.");
+  lines.push(
+    "  Always provide `intent` on every search call to disambiguate and improve snippets.",
+  );
   lines.push("");
   lines.push("Examples:");
   lines.push("  Quick keyword lookup: [{type:'lex', query:'error handling'}]");
-  lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
-  lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
-  lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push(
+    "  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]",
+  );
+  lines.push(
+    "  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]",
+  );
+  lines.push(
+    "  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'",
+  );
 
   // --- Retrieval workflow ---
   lines.push("");
   lines.push("Retrieval:");
-  lines.push("  - `get` — single document by path or docid (#abc123). Supports line offset (`file.md:100`).");
-  lines.push("  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.");
+  lines.push(
+    "  - `get` — single document by path or docid (#abc123). Supports line offset (`file.md:100`).",
+  );
+  lines.push(
+    "  - `multi_get` — batch retrieve by glob (`journals/2025-05*.md`) or comma-separated list.",
+  );
 
   // --- Non-obvious things that prevent mistakes ---
   lines.push("");
   lines.push("Tips:");
   lines.push("  - File paths in results are relative to their collection.");
   lines.push("  - Use `minScore: 0.5` to filter low-confidence results.");
-  lines.push("  - Results include a `context` field describing the content type.");
+  lines.push(
+    "  - Results include a `context` field describing the content type.",
+  );
 
   return lines.join("\n");
 }
@@ -187,36 +230,43 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
     new ResourceTemplate("qmd://{+path}", { list: undefined }),
     {
       title: "QMD Document",
-      description: "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
+      description:
+        "A markdown document from your QMD knowledge base. Use search tools to discover documents.",
       mimeType: "text/markdown",
     },
     async (uri, { path }) => {
       // Decode URL-encoded path (MCP clients send encoded URIs)
-      const pathStr = Array.isArray(path) ? path.join('/') : (path || '');
+      const pathStr = Array.isArray(path) ? path.join("/") : path || "";
       const decodedPath = decodeURIComponent(pathStr);
 
       // Use SDK to find document — findDocument handles collection/path resolution
       const result = await store.get(decodedPath, { includeBody: true });
 
       if ("error" in result) {
-        return { contents: [{ uri: uri.href, text: `Document not found: ${decodedPath}` }] };
+        return {
+          contents: [
+            { uri: uri.href, text: `Document not found: ${decodedPath}` },
+          ],
+        };
       }
 
-      let text = addLineNumbers(result.body || "");  // Default to line numbers
+      let text = addLineNumbers(result.body || ""); // Default to line numbers
       if (result.context) {
         text = `<!-- Context: ${result.context} -->\n\n` + text;
       }
 
       return {
-        contents: [{
-          uri: uri.href,
-          name: result.displayPath,
-          title: result.title || result.displayPath,
-          mimeType: "text/markdown",
-          text,
-        }],
+        contents: [
+          {
+            uri: uri.href,
+            name: result.displayPath,
+            title: result.title || result.displayPath,
+            mimeType: "text/markdown",
+            text,
+          },
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -224,14 +274,18 @@ async function createMcpServer(store: QMDStore): Promise<McpServer> {
   // ---------------------------------------------------------------------------
 
   const subSearchSchema = z.object({
-    type: z.enum(['lex', 'vec', 'hyde']).describe(
-      "lex = BM25 keywords (supports \"phrase\" and -negation); " +
-      "vec = semantic question; hyde = hypothetical answer passage"
-    ),
-    query: z.string().describe(
-      "The query text. For lex: use keywords, \"quoted phrases\", and -negation. " +
-      "For vec: natural language question. For hyde: 50-100 word answer passage."
-    ),
+    type: z
+      .enum(["lex", "vec", "hyde"])
+      .describe(
+        'lex = BM25 keywords (supports "phrase" and -negation); ' +
+          "vec = semantic question; hyde = hypothetical answer passage",
+      ),
+    query: z
+      .string()
+      .describe(
+        'The query text. For lex: use keywords, "quoted phrases", and -negation. ' +
+          "For vec: natural language question. For hyde: 50-100 word answer passage.",
+      ),
   });
 
   server.registerTool(
@@ -299,26 +353,59 @@ Intent-aware lex (C++ performance, not sports):
 \`\`\``,
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        searches: z.array(subSearchSchema).min(1).max(10).describe(
-          "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight."
-        ),
-        limit: z.number().optional().default(10).describe("Max results (default: 10)"),
-        minScore: z.number().optional().default(0).describe("Min relevance 0-1 (default: 0)"),
-        candidateLimit: z.number().optional().describe(
-          "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
-        ),
-        collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
-        intent: z.string().optional().describe(
-          "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
-        ),
-        rerank: z.boolean().optional().default(true).describe(
-          "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
-        ),
+        searches: z
+          .array(subSearchSchema)
+          .min(1)
+          .max(10)
+          .describe(
+            "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight.",
+          ),
+        limit: z
+          .number()
+          .optional()
+          .default(10)
+          .describe("Max results (default: 10)"),
+        minScore: z
+          .number()
+          .optional()
+          .default(0)
+          .describe("Min relevance 0-1 (default: 0)"),
+        candidateLimit: z
+          .number()
+          .optional()
+          .describe(
+            "Maximum candidates to rerank (default: 40, lower = faster but may miss results)",
+          ),
+        collections: z
+          .array(z.string())
+          .optional()
+          .describe("Filter to collections (OR match)"),
+        intent: z
+          .string()
+          .optional()
+          .describe(
+            "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own.",
+          ),
+        rerank: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines.",
+          ),
       },
     },
-    async ({ searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+    async ({
+      searches,
+      limit,
+      minScore,
+      candidateLimit,
+      collections,
+      intent,
+      rerank,
+    }) => {
       // Map to internal format
-      const queries: ExpandedQuery[] = searches.map(s => ({
+      const queries: ExpandedQuery[] = searches.map((s) => ({
         type: s.type,
         query: s.query,
       }));
@@ -328,7 +415,8 @@ Intent-aware lex (C++ performance, not sports):
 
       const results = await store.search({
         queries,
-        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        collections:
+          effectiveCollections.length > 0 ? effectiveCollections : undefined,
         limit,
         minScore,
         candidateLimit,
@@ -337,12 +425,21 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       // Use first lex or vec query for snippet extraction
-      const primaryQuery = searches.find(s => s.type === 'lex')?.query
-        || searches.find(s => s.type === 'vec')?.query
-        || searches[0]?.query || "";
+      const primaryQuery =
+        searches.find((s) => s.type === "lex")?.query ||
+        searches.find((s) => s.type === "vec")?.query ||
+        searches[0]?.query ||
+        "";
 
-      const filtered: SearchResultItem[] = results.map(r => {
-        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length, intent);
+      const filtered: SearchResultItem[] = results.map((r) => {
+        const { line, snippet } = extractSnippet(
+          r.body,
+          primaryQuery,
+          300,
+          r.bestChunkPos,
+          r.bestChunk.length,
+          intent,
+        );
         return {
           docid: `#${r.docid}`,
           file: r.displayPath,
@@ -355,10 +452,12 @@ Intent-aware lex (C++ performance, not sports):
       });
 
       return {
-        content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
+        content: [
+          { type: "text", text: formatSearchSummary(filtered, primaryQuery) },
+        ],
         structuredContent: { results: filtered },
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -369,13 +468,30 @@ Intent-aware lex (C++ performance, not sports):
     "get",
     {
       title: "Get Document",
-      description: "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
+      description:
+        "Retrieve the full content of a document by its file path or docid. Use paths or docids (#abc123) from search results. Suggests similar files if not found.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        file: z.string().describe("File path or docid from search results. Supports a line-range suffix: 'pages/meeting.md:100' starts at line 100; 'pages/meeting.md:100:40' (or '#abc123:100:40') reads 40 lines from line 100."),
-        fromLine: z.number().optional().describe("Start from this line number (1-indexed)"),
-        maxLines: z.number().optional().describe("Maximum number of lines to return"),
-        lineNumbers: z.boolean().optional().default(true).describe("Add line numbers to output (format: 'N: content'). On by default; set false for raw content."),
+        file: z
+          .string()
+          .describe(
+            "File path or docid from search results. Supports a line-range suffix: 'pages/meeting.md:100' starts at line 100; 'pages/meeting.md:100:40' (or '#abc123:100:40') reads 40 lines from line 100.",
+          ),
+        fromLine: z
+          .number()
+          .optional()
+          .describe("Start from this line number (1-indexed)"),
+        maxLines: z
+          .number()
+          .optional()
+          .describe("Maximum number of lines to return"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Add line numbers to output (format: 'N: content'). On by default; set false for raw content.",
+          ),
       },
     },
     async ({ file, fromLine, maxLines, lineNumbers }) => {
@@ -386,8 +502,10 @@ Intent-aware lex (C++ performance, not sports):
       let lookup = file;
       const rangeMatch = lookup.match(/:(\d+):(\d+)$/);
       if (rangeMatch) {
-        if (parsedFromLine === undefined) parsedFromLine = parseInt(rangeMatch[1]!, 10);
-        if (parsedMaxLines === undefined) parsedMaxLines = parseInt(rangeMatch[2]!, 10);
+        if (parsedFromLine === undefined)
+          parsedFromLine = parseInt(rangeMatch[1]!, 10);
+        if (parsedMaxLines === undefined)
+          parsedMaxLines = parseInt(rangeMatch[2]!, 10);
         lookup = lookup.slice(0, -rangeMatch[0].length);
       } else {
         const colonMatch = lookup.match(/:(\d+)$/);
@@ -396,14 +514,15 @@ Intent-aware lex (C++ performance, not sports):
           lookup = lookup.slice(0, -colonMatch[0].length);
         }
       }
-      if (parsedFromLine !== undefined) parsedFromLine = Math.max(1, parsedFromLine);
+      if (parsedFromLine !== undefined)
+        parsedFromLine = Math.max(1, parsedFromLine);
 
       const result = await store.get(lookup, { includeBody: false });
 
       if ("error" in result) {
         let msg = `Document not found: ${file}`;
         if (result.similarFiles.length > 0) {
-          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map(s => `  - ${s}`).join('\n')}`;
+          msg += `\n\nDid you mean one of these?\n${result.similarFiles.map((s) => `  - ${s}`).join("\n")}`;
         }
         return {
           content: [{ type: "text", text: msg }],
@@ -411,7 +530,11 @@ Intent-aware lex (C++ performance, not sports):
         };
       }
 
-      const body = await store.getDocumentBody(result.filepath, { fromLine: parsedFromLine, maxLines: parsedMaxLines }) ?? "";
+      const body =
+        (await store.getDocumentBody(result.filepath, {
+          fromLine: parsedFromLine,
+          maxLines: parsedMaxLines,
+        })) ?? "";
       let text = body;
       if (lineNumbers) {
         const startLine = parsedFromLine || 1;
@@ -422,18 +545,20 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{
-          type: "resource",
-          resource: {
-            uri: `qmd://${encodeQmdPath(result.displayPath)}`,
-            name: result.displayPath,
-            title: result.title,
-            mimeType: "text/markdown",
-            text,
+        content: [
+          {
+            type: "resource",
+            resource: {
+              uri: `qmd://${encodeQmdPath(result.displayPath)}`,
+              name: result.displayPath,
+              title: result.title,
+              mimeType: "text/markdown",
+              text,
+            },
           },
-        }],
+        ],
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -444,29 +569,59 @@ Intent-aware lex (C++ performance, not sports):
     "multi_get",
     {
       title: "Multi-Get Documents",
-      description: "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
+      description:
+        "Retrieve multiple documents by glob pattern (e.g., 'journals/2025-05*.md') or comma-separated list. Skips files larger than maxBytes.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
-        pattern: z.string().describe("Glob pattern or comma-separated list of file paths"),
+        pattern: z
+          .string()
+          .describe("Glob pattern or comma-separated list of file paths"),
         maxLines: z.number().optional().describe("Maximum lines per file"),
-        maxBytes: z.number().optional().default(10240).describe("Skip files larger than this (default: 10240 = 10KB)"),
-        lineNumbers: z.boolean().optional().default(true).describe("Add line numbers to output (format: 'N: content'). On by default; set false for raw content."),
+        maxBytes: z
+          .number()
+          .optional()
+          .default(10240)
+          .describe("Skip files larger than this (default: 10240 = 10KB)"),
+        lineNumbers: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Add line numbers to output (format: 'N: content'). On by default; set false for raw content.",
+          ),
       },
     },
     async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
-      const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
+      const { docs, errors } = await store.multiGet(pattern, {
+        includeBody: true,
+        maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES,
+      });
 
       if (docs.length === 0 && errors.length === 0) {
         return {
-          content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+          content: [
+            { type: "text", text: `No files matched pattern: ${pattern}` },
+          ],
           isError: true,
         };
       }
 
-      const content: ({ type: "text"; text: string } | { type: "resource"; resource: { uri: string; name: string; title?: string; mimeType: string; text: string } })[] = [];
+      const content: (
+        | { type: "text"; text: string }
+        | {
+            type: "resource";
+            resource: {
+              uri: string;
+              name: string;
+              title?: string;
+              mimeType: string;
+              text: string;
+            };
+          }
+      )[] = [];
 
       if (errors.length > 0) {
-        content.push({ type: "text", text: `Errors:\n${errors.join('\n')}` });
+        content.push({ type: "text", text: `Errors:\n${errors.join("\n")}` });
       }
 
       for (const result of docs) {
@@ -506,7 +661,7 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -517,7 +672,8 @@ Intent-aware lex (C++ performance, not sports):
     "status",
     {
       title: "Index Status",
-      description: "Show the status of the QMD index: collections, document counts, and health information.",
+      description:
+        "Show the status of the QMD index: collections, document counts, and health information.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {},
     },
@@ -528,7 +684,7 @@ Intent-aware lex (C++ performance, not sports):
         `QMD Index Status:`,
         `  Total documents: ${status.totalDocuments}`,
         `  Needs embedding: ${status.needsEmbedding}`,
-        `  Vector index: ${status.hasVectorIndex ? 'yes' : 'no'}`,
+        `  Vector index: ${status.hasVectorIndex ? "yes" : "no"}`,
         `  Collections: ${status.collections.length}`,
       ];
 
@@ -537,10 +693,10 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: summary.join('\n') }],
+        content: [{ type: "text", text: summary.join("\n") }],
         structuredContent: status,
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -551,12 +707,16 @@ Intent-aware lex (C++ performance, not sports):
     "update",
     {
       title: "Update Index",
-      description: "Re-index collections by scanning the filesystem for new, changed, or removed files. Run this after adding or modifying documents in indexed directories. Returns counts of indexed, updated, unchanged, and removed files.",
+      description:
+        "Re-index collections by scanning the filesystem for new, changed, or removed files. Run this after adding or modifying documents in indexed directories. Returns counts of indexed, updated, unchanged, and removed files.",
       annotations: { readOnlyHint: false, openWorldHint: false },
       inputSchema: {
-        collections: z.array(z.string()).optional().describe(
-          "Specific collections to update (omit to update all). Use 'status' tool to see collection names."
-        ),
+        collections: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Specific collections to update (omit to update all). Use 'status' tool to see collection names.",
+          ),
       },
     },
     async ({ collections }) => {
@@ -573,14 +733,16 @@ Intent-aware lex (C++ performance, not sports):
       ];
 
       if (result.needsEmbedding > 0) {
-        lines.push(`\n${result.needsEmbedding} documents need embedding. Run the 'embed' tool to generate vectors.`);
+        lines.push(
+          `\n${result.needsEmbedding} documents need embedding. Run the 'embed' tool to generate vectors.`,
+        );
       }
 
       return {
-        content: [{ type: "text", text: lines.join('\n') }],
+        content: [{ type: "text", text: lines.join("\n") }],
         structuredContent: result,
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -591,11 +753,23 @@ Intent-aware lex (C++ performance, not sports):
     "embed",
     {
       title: "Generate Embeddings",
-      description: "Generate vector embeddings for documents that need them. Run after 'update' to make new/changed documents searchable via semantic (vec/hyde) queries. Embeddings are generated in batches and may take time for large collections.",
+      description:
+        "Generate vector embeddings for documents that need them. Run after 'update' to make new/changed documents searchable via semantic (vec/hyde) queries. Embeddings are generated in batches and may take time for large collections.",
       annotations: { readOnlyHint: false, openWorldHint: false },
       inputSchema: {
-        collection: z.string().optional().describe("Restrict embedding to a single collection (omit for all)."),
-        force: z.boolean().optional().default(false).describe("Force re-embed all documents (default: false). Use after changing embedding model."),
+        collection: z
+          .string()
+          .optional()
+          .describe(
+            "Restrict embedding to a single collection (omit for all).",
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "Force re-embed all documents (default: false). Use after changing embedding model.",
+          ),
       },
     },
     async ({ collection, force }) => {
@@ -613,10 +787,10 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: lines.join('\n') }],
+        content: [{ type: "text", text: lines.join("\n") }],
         structuredContent: result,
       };
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -634,22 +808,42 @@ If a collection is specified, the file is saved directly into that collection's 
 Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to move files from inbox to a specific collection.`,
       annotations: { readOnlyHint: false, openWorldHint: false },
       inputSchema: {
-        content: z.string().describe("Document content (markdown or plain text)"),
+        content: z
+          .string()
+          .describe("Document content (markdown or plain text)"),
         filename: z.string().describe("Filename with .md or .txt extension"),
-        collection: z.string().optional().describe("Target collection name. Omit to save to inbox. Use 'status' tool to see collection names."),
-        path: z.string().optional().describe("Sub-path within the collection directory (e.g., 'journal/2024/')"),
+        collection: z
+          .string()
+          .optional()
+          .describe(
+            "Target collection name. Omit to save to inbox. Use 'status' tool to see collection names.",
+          ),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Sub-path within the collection directory (e.g., 'journal/2024/')",
+          ),
       },
     },
     async ({ content, filename, collection, path }) => {
-      if (!filename.endsWith('.md') && !filename.endsWith('.txt')) {
+      if (!filename.endsWith(".md") && !filename.endsWith(".txt")) {
         return {
-          content: [{ type: "text", text: `Unsupported file type: ${filename}. Only .md and .txt are supported.` }],
+          content: [
+            {
+              type: "text",
+              text: `Unsupported file type: ${filename}. Only .md and .txt are supported.`,
+            },
+          ],
           isError: true,
         };
       }
 
       try {
-        const result = await store.ingestFile(content, filename, { collection, path });
+        const result = await store.ingestFile(content, filename, {
+          collection,
+          path,
+        });
         const summary = collection
           ? `Uploaded ${result.file} to '${result.collection}' (${result.docid})`
           : `Uploaded ${result.file} to inbox (${result.docid})`;
@@ -665,7 +859,7 @@ Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to 
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -676,19 +870,28 @@ Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to 
     "inbox_move",
     {
       title: "Move from Inbox",
-      description: "Move a file from the inbox to a target collection. The file is removed from inbox, saved into the collection directory, and re-indexed in both locations. Use 'status' tool to see available collection names.",
+      description:
+        "Move a file from the inbox to a target collection. The file is removed from inbox, saved into the collection directory, and re-indexed in both locations. Use 'status' tool to see available collection names.",
       annotations: { readOnlyHint: false, openWorldHint: false },
       inputSchema: {
         file: z.string().describe("Filename currently in inbox to move"),
         collection: z.string().describe("Target collection name"),
-        path: z.string().optional().describe("Sub-path within the target collection directory"),
+        path: z
+          .string()
+          .optional()
+          .describe("Sub-path within the target collection directory"),
       },
     },
     async ({ file, collection, path }) => {
       try {
         const result = await store.moveInboxFile(file, collection, path);
         return {
-          content: [{ type: "text", text: `Moved ${result.file} from ${result.from} to ${result.to}` }],
+          content: [
+            {
+              type: "text",
+              text: `Moved ${result.file} from ${result.from} to ${result.to}`,
+            },
+          ],
           structuredContent: result,
         };
       } catch (err) {
@@ -698,7 +901,7 @@ Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to 
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ---------------------------------------------------------------------------
@@ -709,7 +912,8 @@ Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to 
     "inbox_list",
     {
       title: "List Inbox",
-      description: "List all files currently in the inbox directory. Inbox files are indexed and searchable. Use 'inbox_move' to move files to a collection.",
+      description:
+        "List all files currently in the inbox directory. Inbox files are indexed and searchable. Use 'inbox_move' to move files to a collection.",
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {},
     },
@@ -718,12 +922,12 @@ Files in inbox are searchable immediately. Use the \`inbox_move\` tool later to 
       if (files.length === 0) {
         return { content: [{ type: "text", text: "Inbox is empty." }] };
       }
-      const summary = `Inbox (${files.length} file${files.length === 1 ? '' : 's'}):\n${files.map(f => `  - ${f}`).join('\n')}`;
+      const summary = `Inbox (${files.length} file${files.length === 1 ? "" : "s"}):\n${files.map((f) => `  - ${f}`).join("\n")}`;
       return {
         content: [{ type: "text", text: summary }],
         structuredContent: { files },
       };
-    }
+    },
   );
 
   return server;
@@ -737,12 +941,9 @@ export type McpStartupOptions = {
   dbPath?: string;
 };
 
-export async function startMcpServer(options: McpStartupOptions = {}): Promise<void> {
-  // Opt into production mode when the MCP server is actually started, not
-  // when this module is merely imported for its exports. Importing the module
-  // at the top level flipped the global production flag and broke test
-  // isolation for downstream suites that expect the default (development)
-  // database path behaviour.
+export async function startMcpServer(
+  options: McpStartupOptions = {},
+): Promise<void> {
   enableProductionMode();
   const configPath = getConfigPath();
   const store = await createStore({
@@ -752,6 +953,10 @@ export async function startMcpServer(options: McpStartupOptions = {}): Promise<v
   const server = await createMcpServer(store);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Start background cloud sync if QMD_SYNC_INTERVAL is set
+  const { startAutoSync } = await import("../cloud/auto-sync.js");
+  startAutoSync(options.dbPath);
 }
 
 // =============================================================================
@@ -770,7 +975,7 @@ export type HttpServerHandle = {
  */
 export async function startMcpHttpServer(
   port: number,
-  options: ({ quiet?: boolean } & McpStartupOptions) = {},
+  options: { quiet?: boolean } & McpStartupOptions = {},
 ): Promise<HttpServerHandle> {
   // See startMcpServer() for the rationale — flip production mode here so the
   // HTTP transport resolves the real database path, without leaking state into
@@ -859,250 +1064,347 @@ export async function startMcpHttpServer(
     return Buffer.concat(chunks).toString();
   }
 
-  const httpServer = createServer(async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
-    const reqStart = Date.now();
-    const pathname = nodeReq.url || "/";
+  const httpServer = createServer(
+    async (nodeReq: IncomingMessage, nodeRes: ServerResponse) => {
+      const reqStart = Date.now();
+      const pathname = nodeReq.url || "/";
 
-    try {
-      if (pathname === "/health" && nodeReq.method === "GET") {
-        const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(body);
-        log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      // REST endpoint: POST /upload — upload a document
-      if (pathname === "/upload" && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
-
-        if (!params.content || typeof params.content !== "string") {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required field: content (string)" }));
-          return;
-        }
-        if (!params.filename || typeof params.filename !== "string") {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required field: filename (string)" }));
-          return;
-        }
-
-        const filename = String(params.filename);
-        if (!filename.endsWith('.md') && !filename.endsWith('.txt')) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: `Unsupported file type: ${filename}. Only .md and .txt.` }));
-          return;
-        }
-
-        try {
-          const result = await store.ingestFile(String(params.content), filename, {
-            collection: typeof params.collection === "string" ? params.collection : undefined,
-            path: typeof params.path === "string" ? params.path : undefined,
+      try {
+        if (pathname === "/health" && nodeReq.method === "GET") {
+          const body = JSON.stringify({
+            status: "ok",
+            uptime: Math.floor((Date.now() - startTime) / 1000),
           });
           nodeRes.writeHead(200, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify(result));
-          log(`${ts()} POST /upload ${filename} → ${result.collection} (${Date.now() - reqStart}ms)`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = msg.includes("not found") ? 404 : 500;
-          nodeRes.writeHead(status, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: msg }));
-        }
-        return;
-      }
-
-      // REST endpoint: GET /inbox — list inbox files
-      if (pathname === "/inbox" && nodeReq.method === "GET") {
-        const files = store.listInboxFiles();
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(JSON.stringify({ files }));
-        log(`${ts()} GET /inbox (${files.length} files, ${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      // REST endpoint: POST /inbox/move — move file from inbox to collection
-      if (pathname === "/inbox/move" && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
-
-        if (!params.file || !params.collection) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required fields: file, collection" }));
+          nodeRes.end(body);
+          log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
           return;
         }
 
-        try {
-          const result = await store.moveInboxFile(
-            String(params.file),
-            String(params.collection),
-            typeof params.path === "string" ? params.path : undefined
-          );
-          nodeRes.writeHead(200, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify(result));
-          log(`${ts()} POST /inbox/move ${params.file} → ${params.collection} (${Date.now() - reqStart}ms)`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const status = msg.includes("not found") ? 404 : 500;
-          nodeRes.writeHead(status, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: msg }));
-        }
-        return;
-      }
+        // REST endpoint: POST /upload — upload a document
+        if (pathname === "/upload" && nodeReq.method === "POST") {
+          const rawBody = await collectBody(nodeReq);
+          const params = JSON.parse(rawBody) as Record<string, unknown>;
 
-      // REST endpoint: POST /search — structured search without MCP protocol
-      // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
-      if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
-
-        // Validate required fields
-        if (!params.searches || !Array.isArray(params.searches)) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({ error: "Missing required field: searches (array)" }));
-          return;
-        }
-
-        // Map to internal format
-        const searches = params.searches as RestSearchInput[];
-        const queries: ExpandedQuery[] = searches.map((s) => ({
-          type: s.type as 'lex' | 'vec' | 'hyde',
-          query: String(s.query || ""),
-        }));
-
-        // Use default collections if none specified
-        const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
-
-        const results = await store.search({
-          queries,
-          collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
-          limit: typeof params.limit === "number" ? params.limit : 10,
-          minScore: typeof params.minScore === "number" ? params.minScore : 0,
-          candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
-          intent: typeof params.intent === "string" ? params.intent : undefined,
-          rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
-        });
-
-        // Use first lex or vec query for snippet extraction
-        const primaryQuery = searches.find((s) => s.type === 'lex')?.query
-          || searches.find((s) => s.type === 'vec')?.query
-          || searches[0]?.query || "";
-
-        const formatted = results.map(r => {
-          const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.intent === "string" ? params.intent : undefined);
-          return {
-            docid: `#${r.docid}`,
-            file: `qmd://${encodeQmdPath(r.displayPath)}`,
-            title: r.title,
-            score: Math.round(r.score * 100) / 100,
-            context: r.context,
-            line,
-            snippet: addLineNumbers(snippet, line),
-          };
-        });
-
-        nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(JSON.stringify({ results: formatted }));
-        log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
-        return;
-      }
-
-      if (pathname === "/mcp" && nodeReq.method === "POST") {
-        const rawBody = await collectBody(nodeReq);
-        const body = JSON.parse(rawBody);
-        const label = describeRequest(body);
-        const url = `http://localhost:${port}${pathname}`;
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // Route to existing session or create new one on initialize
-        const sessionId = headers["mcp-session-id"];
-        let transport: WebStandardStreamableHTTPServerTransport;
-
-        if (sessionId) {
-          const existing = sessions.get(sessionId);
-          if (!existing) {
-            nodeRes.writeHead(404, { "Content-Type": "application/json" });
-            nodeRes.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32001, message: "Session not found" },
-              id: body?.id ?? null,
-            }));
+          if (!params.content || typeof params.content !== "string") {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required field: content (string)",
+              }),
+            );
             return;
           }
-          transport = existing;
-        } else if (isInitializeRequest(body)) {
-          transport = await createSession();
-        } else {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: body?.id ?? null,
-          }));
+          if (!params.filename || typeof params.filename !== "string") {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required field: filename (string)",
+              }),
+            );
+            return;
+          }
+
+          const filename = String(params.filename);
+          if (!filename.endsWith(".md") && !filename.endsWith(".txt")) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: `Unsupported file type: ${filename}. Only .md and .txt.`,
+              }),
+            );
+            return;
+          }
+
+          try {
+            const result = await store.ingestFile(
+              String(params.content),
+              filename,
+              {
+                collection:
+                  typeof params.collection === "string"
+                    ? params.collection
+                    : undefined,
+                path: typeof params.path === "string" ? params.path : undefined,
+              },
+            );
+            nodeRes.writeHead(200, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify(result));
+            log(
+              `${ts()} POST /upload ${filename} → ${result.collection} (${Date.now() - reqStart}ms)`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = msg.includes("not found") ? 404 : 500;
+            nodeRes.writeHead(status, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: msg }));
+          }
           return;
         }
 
-        const request = new Request(url, { method: "POST", headers, body: rawBody });
-        const response = await transport.handleRequest(request, { parsedBody: body });
+        // REST endpoint: GET /inbox — list inbox files
+        if (pathname === "/inbox" && nodeReq.method === "GET") {
+          const files = store.listInboxFiles();
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ files }));
+          log(
+            `${ts()} GET /inbox (${files.length} files, ${Date.now() - reqStart}ms)`,
+          );
+          return;
+        }
 
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
-        return;
+        // REST endpoint: POST /inbox/move — move file from inbox to collection
+        if (pathname === "/inbox/move" && nodeReq.method === "POST") {
+          const rawBody = await collectBody(nodeReq);
+          const params = JSON.parse(rawBody) as Record<string, unknown>;
+
+          if (!params.file || !params.collection) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required fields: file, collection",
+              }),
+            );
+            return;
+          }
+
+          try {
+            const result = await store.moveInboxFile(
+              String(params.file),
+              String(params.collection),
+              typeof params.path === "string" ? params.path : undefined,
+            );
+            nodeRes.writeHead(200, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify(result));
+            log(
+              `${ts()} POST /inbox/move ${params.file} → ${params.collection} (${Date.now() - reqStart}ms)`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const status = msg.includes("not found") ? 404 : 500;
+            nodeRes.writeHead(status, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: msg }));
+          }
+          return;
+        }
+
+        // REST endpoint: POST /search — structured search without MCP protocol
+        // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
+        if (
+          (pathname === "/query" || pathname === "/search") &&
+          nodeReq.method === "POST"
+        ) {
+          const rawBody = await collectBody(nodeReq);
+          const params = JSON.parse(rawBody) as Record<string, unknown>;
+
+          // Validate required fields
+          if (!params.searches || !Array.isArray(params.searches)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                error: "Missing required field: searches (array)",
+              }),
+            );
+            return;
+          }
+
+          // Map to internal format
+          const searches = params.searches as RestSearchInput[];
+          const queries: ExpandedQuery[] = searches.map((s) => ({
+            type: s.type as "lex" | "vec" | "hyde",
+            query: String(s.query || ""),
+          }));
+
+          // Use default collections if none specified
+          const effectiveCollections = Array.isArray(params.collections)
+            ? params.collections.map(String)
+            : defaultCollectionNames;
+
+          const results = await store.search({
+            queries,
+            collections:
+              effectiveCollections.length > 0
+                ? effectiveCollections
+                : undefined,
+            limit: typeof params.limit === "number" ? params.limit : 10,
+            minScore: typeof params.minScore === "number" ? params.minScore : 0,
+            candidateLimit:
+              typeof params.candidateLimit === "number"
+                ? params.candidateLimit
+                : undefined,
+            intent:
+              typeof params.intent === "string" ? params.intent : undefined,
+            rerank:
+              typeof params.rerank === "boolean" ? params.rerank : undefined,
+          });
+
+          // Use first lex or vec query for snippet extraction
+          const primaryQuery =
+            searches.find((s) => s.type === "lex")?.query ||
+            searches.find((s) => s.type === "vec")?.query ||
+            searches[0]?.query ||
+            "";
+
+          const formatted = results.map((r) => {
+            const { line, snippet } = extractSnippet(
+              r.body,
+              String(primaryQuery),
+              300,
+              r.bestChunkPos,
+              r.bestChunk.length,
+              typeof params.intent === "string" ? params.intent : undefined,
+            );
+            return {
+              docid: `#${r.docid}`,
+              file: `qmd://${encodeQmdPath(r.displayPath)}`,
+              title: r.title,
+              score: Math.round(r.score * 100) / 100,
+              context: r.context,
+              line,
+              snippet: addLineNumbers(snippet, line),
+            };
+          });
+
+          nodeRes.writeHead(200, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ results: formatted }));
+          log(
+            `${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`,
+          );
+          return;
+        }
+
+        if (pathname === "/mcp" && nodeReq.method === "POST") {
+          const rawBody = await collectBody(nodeReq);
+          const body = JSON.parse(rawBody);
+          const label = describeRequest(body);
+          const url = `http://localhost:${port}${pathname}`;
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
+
+          // Route to existing session or create new one on initialize
+          const sessionId = headers["mcp-session-id"];
+          let transport: WebStandardStreamableHTTPServerTransport;
+
+          if (sessionId) {
+            const existing = sessions.get(sessionId);
+            if (!existing) {
+              nodeRes.writeHead(404, { "Content-Type": "application/json" });
+              nodeRes.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  error: { code: -32001, message: "Session not found" },
+                  id: body?.id ?? null,
+                }),
+              );
+              return;
+            }
+            transport = existing;
+          } else if (isInitializeRequest(body)) {
+            transport = await createSession();
+          } else {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: body?.id ?? null,
+              }),
+            );
+            return;
+          }
+
+          const request = new Request(url, {
+            method: "POST",
+            headers,
+            body: rawBody,
+          });
+          const response = await transport.handleRequest(request, {
+            parsedBody: body,
+          });
+
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          log(`${ts()} POST /mcp ${label} (${Date.now() - reqStart}ms)`);
+          return;
+        }
+
+        if (pathname === "/mcp") {
+          const headers: Record<string, string> = {};
+          for (const [k, v] of Object.entries(nodeReq.headers)) {
+            if (typeof v === "string") headers[k] = v;
+          }
+
+          // GET/DELETE must have a valid session
+          const sessionId = headers["mcp-session-id"];
+          if (!sessionId) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Bad Request: Missing session ID",
+                },
+                id: null,
+              }),
+            );
+            return;
+          }
+          const transport = sessions.get(sessionId);
+          if (!transport) {
+            nodeRes.writeHead(404, { "Content-Type": "application/json" });
+            nodeRes.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                error: { code: -32001, message: "Session not found" },
+                id: null,
+              }),
+            );
+            return;
+          }
+
+          const url = `http://localhost:${port}${pathname}`;
+          const rawBody =
+            nodeReq.method !== "GET" && nodeReq.method !== "HEAD"
+              ? await collectBody(nodeReq)
+              : undefined;
+          const request = new Request(url, {
+            method: nodeReq.method || "GET",
+            headers,
+            ...(rawBody ? { body: rawBody } : {}),
+          });
+          const response = await transport.handleRequest(request);
+          nodeRes.writeHead(
+            response.status,
+            Object.fromEntries(response.headers),
+          );
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          return;
+        }
+
+        nodeRes.writeHead(404);
+        nodeRes.end("Not Found");
+      } catch (err) {
+        console.error("HTTP handler error:", err);
+        nodeRes.writeHead(500);
+        nodeRes.end("Internal Server Error");
       }
-
-      if (pathname === "/mcp") {
-        const headers: Record<string, string> = {};
-        for (const [k, v] of Object.entries(nodeReq.headers)) {
-          if (typeof v === "string") headers[k] = v;
-        }
-
-        // GET/DELETE must have a valid session
-        const sessionId = headers["mcp-session-id"];
-        if (!sessionId) {
-          nodeRes.writeHead(400, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Missing session ID" },
-            id: null,
-          }));
-          return;
-        }
-        const transport = sessions.get(sessionId);
-        if (!transport) {
-          nodeRes.writeHead(404, { "Content-Type": "application/json" });
-          nodeRes.end(JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32001, message: "Session not found" },
-            id: null,
-          }));
-          return;
-        }
-
-        const url = `http://localhost:${port}${pathname}`;
-        const rawBody = nodeReq.method !== "GET" && nodeReq.method !== "HEAD" ? await collectBody(nodeReq) : undefined;
-        const request = new Request(url, { method: nodeReq.method || "GET", headers, ...(rawBody ? { body: rawBody } : {}) });
-        const response = await transport.handleRequest(request);
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
-        return;
-      }
-
-      nodeRes.writeHead(404);
-      nodeRes.end("Not Found");
-    } catch (err) {
-      console.error("HTTP handler error:", err);
-      nodeRes.writeHead(500);
-      nodeRes.end("Internal Server Error");
-    }
-  });
+    },
+  );
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on("error", reject);
-    httpServer.listen(port, process.env.QMD_BIND_ADDRESS || "0.0.0.0", () => resolve());
+    httpServer.listen(port, process.env.QMD_BIND_ADDRESS || "0.0.0.0", () =>
+      resolve(),
+    );
   });
 
   const actualPort = (httpServer.address() as import("net").AddressInfo).port;
@@ -1132,10 +1434,19 @@ export async function startMcpHttpServer(
 
   const bindAddr = process.env.QMD_BIND_ADDRESS || "0.0.0.0";
   log(`QMD MCP server listening on http://${bindAddr}:${actualPort}/mcp`);
+
+  // Start background cloud sync if QMD_SYNC_INTERVAL is set
+  const { startAutoSync } = await import("../cloud/auto-sync.js");
+  startAutoSync(options.dbPath);
+
   return { httpServer, port: actualPort, stop };
 }
 
 // Run if this is the main module
-if (fileURLToPath(import.meta.url) === process.argv[1] || process.argv[1]?.endsWith("/server.ts") || process.argv[1]?.endsWith("/server.js")) {
+if (
+  fileURLToPath(import.meta.url) === process.argv[1] ||
+  process.argv[1]?.endsWith("/server.ts") ||
+  process.argv[1]?.endsWith("/server.js")
+) {
   startMcpServer().catch(console.error);
 }
