@@ -7,7 +7,6 @@
 
 import { getRemote, resolveRemoteName } from "./config.js";
 import { createCloudClient, type CloudClient } from "./client.js";
-import { pullFromRemote } from "./pull.js";
 import { pushToRemote } from "./push.js";
 import { openDatabase } from "../db.js";
 import { getDefaultDbPath } from "../store.js";
@@ -54,11 +53,8 @@ async function doSyncCycle(
 
   const client: CloudClient = await createCloudClient(remote);
   try {
-    const pullResult = await pullFromRemote(client, dbPath);
-    log(
-      `auto-sync: pull ${pullResult.swapped ? "OK" : "skipped"} (${pullResult.durationMs}ms)`,
-    );
-
+    // Push only — pull swaps the DB file which would break the live MCP
+    // server's open connection. Pull should be done manually or at startup.
     const db = openDatabase(dbPath);
     try {
       const pushResult = await pushToRemote(db, client);
