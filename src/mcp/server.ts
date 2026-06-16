@@ -956,7 +956,7 @@ export async function startMcpServer(
 
   // Start background cloud sync if QMD_SYNC_INTERVAL is set
   const { startAutoSync } = await import("../cloud/auto-sync.js");
-  startAutoSync(options.dbPath);
+  startAutoSync(() => store.internal.db);
 }
 
 // =============================================================================
@@ -1437,7 +1437,7 @@ export async function startMcpHttpServer(
 
   // Start background cloud sync if QMD_SYNC_INTERVAL is set
   const { startAutoSync } = await import("../cloud/auto-sync.js");
-  startAutoSync(options.dbPath);
+  startAutoSync(() => store.internal.db);
 
   return { httpServer, port: actualPort, stop };
 }
