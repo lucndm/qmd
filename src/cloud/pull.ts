@@ -227,7 +227,12 @@ async function createLocalSchema(
         );
       }
     } else {
-      db.exec(table.ddl);
+      // Ensure IF NOT EXISTS to avoid errors when table already exists locally
+      const ddl = table.ddl.replace(
+        /CREATE TABLE(?!\s+IF\s+NOT\s+EXISTS)/i,
+        "CREATE TABLE IF NOT EXISTS",
+      );
+      db.exec(ddl);
     }
   }
 }
