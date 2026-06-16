@@ -435,7 +435,15 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
 
   // Create the internal store (opens DB, creates tables)
-  const internal = createStoreInternal(options.dbPath);
+  // Enable embedded replica if LIBSQL_URL is set
+  const replicaOpts = process.env.LIBSQL_URL
+    ? {
+        syncUrl: process.env.LIBSQL_URL,
+        authToken: process.env.LIBSQL_AUTH,
+        syncPeriod: parseInt(process.env.LIBSQL_SYNC_PERIOD ?? "60", 10),
+      }
+    : undefined;
+  const internal = createStoreInternal(options.dbPath, replicaOpts);
   const db = internal.db;
 
   // Track whether we have a YAML config path for write-through

@@ -11,7 +11,12 @@
  *   const store = createStore();
  */
 
-import { openDatabase, loadSqliteVec } from "./db.js";
+import {
+  openDatabase,
+  loadSqliteVec,
+  isBun,
+  type ReplicaOptions,
+} from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
 import { createHash } from "crypto";
@@ -903,16 +908,22 @@ function rebuildFTSForCjkNormalization(db: Database): void {
 }
 
 function initializeDatabase(db: Database): void {
-  try {
-    loadSqliteVec(db);
-    verifySqliteVecLoaded(db);
+  if (isBun) {
+    // Bun: load sqlite-vec extension
+    try {
+      loadSqliteVec(db);
+      verifySqliteVecLoaded(db);
+      _sqliteVecAvailable = true;
+      _sqliteVecUnavailableReason = null;
+    } catch (err) {
+      _sqliteVecAvailable = false;
+      _sqliteVecUnavailableReason = getErrorMessage(err);
+      console.warn(_sqliteVecUnavailableReason);
+    }
+  } else {
+    // Node + libsql: vectors are built-in, always available
     _sqliteVecAvailable = true;
     _sqliteVecUnavailableReason = null;
-  } catch (err) {
-    // sqlite-vec is optional — vector search won't work but FTS is fine
-    _sqliteVecAvailable = false;
-    _sqliteVecUnavailableReason = getErrorMessage(err);
-    console.warn(_sqliteVecUnavailableReason);
   }
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
@@ -1318,23 +1329,59 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
       `SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`,
     )
     .get() as { sql: string } | null;
-  if (tableInfo) {
-    const match = tableInfo.sql.match(/float\[(\d+)\]/);
-    const hasHashSeq = tableInfo.sql.includes("hash_seq");
-    const hasCosine = tableInfo.sql.includes("distance_metric=cosine");
-    const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
-    if (existingDims === dimensions && hasHashSeq && hasCosine) return;
-    if (existingDims !== null && existingDims !== dimensions) {
-      throw new Error(
-        `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
-          `Run 'qmd embed -f' to re-embed with the new model.`,
-      );
+
+  if (isBun) {
+    // Bun + sqlite-vec: use vec0 virtual table
+    if (tableInfo) {
+      const match = tableInfo.sql.match(/float\[(\d+)\]/);
+      const hasHashSeq = tableInfo.sql.includes("hash_seq");
+      const hasCosine = tableInfo.sql.includes("distance_metric=cosine");
+      const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
+      if (existingDims === dimensions && hasHashSeq && hasCosine) return;
+      if (existingDims !== null && existingDims !== dimensions) {
+        throw new Error(
+          `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
+            `Run 'qmd embed -f' to re-embed with the new model.`,
+        );
+      }
+      db.exec("DROP TABLE IF EXISTS vectors_vec");
     }
-    db.exec("DROP TABLE IF EXISTS vectors_vec");
+    db.exec(
+      `CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`,
+    );
+  } else {
+    // Node + libsql: use native FLOAT32 column + vector index
+    if (tableInfo) {
+      if (tableInfo.sql.includes("USING vec0")) {
+        // Legacy vec0 table — needs migration
+        throw new Error(
+          "vectors_vec uses deprecated vec0 format. Run 'qmd migrate-vectors' to convert to libSQL native vectors.",
+        );
+      }
+      const match = tableInfo.sql.match(/FLOAT32\((\d+)\)/i);
+      const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
+      if (existingDims !== null && existingDims !== dimensions) {
+        throw new Error(
+          `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
+            `Run 'qmd embed -f' to re-embed with the new model.`,
+        );
+      }
+      if (existingDims === dimensions) {
+        // Table exists with correct dims — ensure vector index exists (may be missing after replica sync)
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS vectors_vec_idx ON vectors_vec (libsql_vector_idx(embedding))`,
+        );
+        return;
+      }
+      db.exec("DROP TABLE IF EXISTS vectors_vec");
+    }
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(${dimensions}))`,
+    );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS vectors_vec_idx ON vectors_vec (libsql_vector_idx(embedding))`,
+    );
   }
-  db.exec(
-    `CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`,
-  );
 }
 
 // =============================================================================
@@ -2259,9 +2306,12 @@ export async function generateEmbeddings(
  * @param dbPath - Path to the SQLite database file
  * @returns Store instance with all methods bound to the database
  */
-export function createStore(dbPath?: string): Store {
+export function createStore(
+  dbPath?: string,
+  replicaOpts?: ReplicaOptions,
+): Store {
   const resolvedPath = dbPath || getDefaultDbPath();
-  const db = openDatabase(resolvedPath);
+  const db = openDatabase(resolvedPath, replicaOpts);
   initializeDatabase(db);
 
   const store: Store = {
@@ -2799,17 +2849,24 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(
       };
     }
 
-    const nearest = db
-      .prepare(
-        `
-      SELECT hash_seq, distance
-      FROM vectors_vec
-      WHERE embedding MATCH ? AND k = 1
-    `,
-      )
-      .get(new Float32Array(result.embedding)) as
-      | { hash_seq: string; distance: number }
-      | undefined;
+    const nearest = isBun
+      ? (db
+          .prepare(
+            `SELECT hash_seq, distance FROM vectors_vec WHERE embedding MATCH ? AND k = 1`,
+          )
+          .get(new Float32Array(result.embedding)) as
+          | { hash_seq: string; distance: number }
+          | undefined)
+      : (db
+          .prepare(
+            `SELECT v.id AS hash_seq, vector_distance_cos(vectors_vec.embedding, ?) AS distance
+             FROM vector_top_k('vectors_vec_idx', ?, 1) AS v
+             JOIN vectors_vec ON vectors_vec.hash_seq = v.id`,
+          )
+          .get(
+            new Float32Array(result.embedding),
+            new Float32Array(result.embedding),
+          ) as { hash_seq: string; distance: number } | undefined);
 
     if (!nearest) {
       return {
@@ -4458,24 +4515,30 @@ export async function searchVec(
     (await getEmbedding(query, model, true, session, llmOverride));
   if (!embedding) return [];
 
-  // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
-  // hang indefinitely when combined with JOINs in the same query. Do NOT try to
-  // "optimize" this by combining into a single query with JOINs - it will break.
-  // See: https://github.com/tobi/qmd/pull/23
-
-  // Step 1: Get vector matches from sqlite-vec (no JOINs allowed)
-  const vecResults = db
-    .prepare(
-      `
-    SELECT hash_seq, distance
-    FROM vectors_vec
-    WHERE embedding MATCH ? AND k = ?
-  `,
-    )
-    .all(new Float32Array(embedding), limit * 3) as {
-    hash_seq: string;
-    distance: number;
-  }[];
+  // Step 1: Get vector matches (two-step: vec query then JOIN, for both vec0 and libsql)
+  const vecResults = isBun
+    ? (db
+        .prepare(
+          `SELECT hash_seq, distance FROM vectors_vec WHERE embedding MATCH ? AND k = ?`,
+        )
+        .all(new Float32Array(embedding), limit * 3) as {
+        hash_seq: string;
+        distance: number;
+      }[])
+    : (db
+        .prepare(
+          `SELECT v.id AS hash_seq, vector_distance_cos(vectors_vec.embedding, ?) AS distance
+           FROM vector_top_k('vectors_vec_idx', ?, ?) AS v
+           JOIN vectors_vec ON vectors_vec.hash_seq = v.id`,
+        )
+        .all(
+          new Float32Array(embedding),
+          new Float32Array(embedding),
+          limit * 3,
+        ) as {
+        hash_seq: string;
+        distance: number;
+      }[]);
 
   if (vecResults.length === 0) return [];
 
@@ -4730,15 +4793,11 @@ export function insertEmbedding(
       embeddedAt,
     );
 
-    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-    const deleteVecStmt = db.prepare(
-      `DELETE FROM vectors_vec WHERE hash_seq = ?`,
+    // Bun+vec0 doesn't support OR REPLACE; libsql does. Use OR REPLACE for both.
+    const upsertVecStmt = db.prepare(
+      `INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`,
     );
-    const insertVecStmt = db.prepare(
-      `INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`,
-    );
-    deleteVecStmt.run(hashSeq);
-    insertVecStmt.run(hashSeq, embedding);
+    upsertVecStmt.run(hashSeq, embedding);
   });
 }
 

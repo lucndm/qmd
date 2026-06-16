@@ -202,7 +202,15 @@ function resolveCliLLM(): LlamaCpp | OpenAILLM {
 
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
-    store = createStore(storeDbPathOverride);
+    // Build replica options from env vars (enables embedded replica auto-sync)
+    const replicaOpts = process.env.LIBSQL_URL
+      ? {
+          syncUrl: process.env.LIBSQL_URL,
+          authToken: process.env.LIBSQL_AUTH,
+          syncPeriod: parseInt(process.env.LIBSQL_SYNC_PERIOD ?? "60", 10),
+        }
+      : undefined;
+    store = createStore(storeDbPathOverride, replicaOpts);
     // Inject cloud-synced collections + global context from DB into collections.ts module state
     // so getCollection/listCollections/listAllContexts resolve cross-instance data
     setDbCollections(getStoreCollections(store.db));
