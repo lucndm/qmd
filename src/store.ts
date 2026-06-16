@@ -925,10 +925,22 @@ function initializeDatabase(db: Database): void {
     _sqliteVecAvailable = true;
     _sqliteVecUnavailableReason = null;
   }
+
+  // For embedded replicas, schema comes from remote — skip local DDL to avoid WalConflict
+  const isReplica = !isBun && !!(db as unknown as { sync?: unknown }).sync;
+  if (isReplica) {
+    try {
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("PRAGMA foreign_keys = ON");
+    } catch {}
+    return;
+  }
+
+  // Standalone mode: initialize schema
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
 
-  // Drop legacy tables that are now managed in YAML
+  // Drop legacy tables
   db.exec(`DROP TABLE IF EXISTS path_contexts`);
   db.exec(`DROP TABLE IF EXISTS collections`);
 
