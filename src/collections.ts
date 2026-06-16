@@ -77,6 +77,7 @@ let configSource:
 
 // DB fallback: extra collections from cloud sync (set by store on init)
 let dbExtraCollections: NamedCollection[] = [];
+let dbGlobalContext: string | undefined = undefined;
 
 /**
  * Inject cloud-synced collections from DB so getCollection/listCollections
@@ -84,6 +85,13 @@ let dbExtraCollections: NamedCollection[] = [];
  */
 export function setDbCollections(cols: NamedCollection[]): void {
   dbExtraCollections = cols;
+}
+
+/**
+ * Set global context sourced from DB (store_config table).
+ */
+export function setDbGlobalContext(ctx: string | undefined): void {
+  dbGlobalContext = ctx;
 }
 
 /**
@@ -477,8 +485,14 @@ export function listAllContexts(): Array<{
   const results: Array<{ collection: string; path: string; context: string }> =
     [];
 
-  // Add global context if present
-  if (config.global_context) {
+  // Add global context (DB first, then YAML fallback)
+  if (dbGlobalContext) {
+    results.push({
+      collection: "*",
+      path: "/",
+      context: dbGlobalContext,
+    });
+  } else if (config.global_context) {
     results.push({
       collection: "*",
       path: "/",
@@ -486,12 +500,38 @@ export function listAllContexts(): Array<{
     });
   }
 
-  // Add collection contexts
+  // Add collection contexts from YAML
+  const yamlContextNames = new Set<string>();
   for (const [name, collection] of Object.entries(config.collections)) {
     if (collection.context) {
+      yamlContextNames.add(name);
       for (const [path, context] of Object.entries(collection.context)) {
         results.push({
           collection: name,
+          path,
+          context,
+        });
+      }
+    }
+  }
+
+  // Merge DB-sourced contexts (cloud sync + direct writes)
+  // Only add DB contexts for collections not already covered by YAML
+  const dbGlobalSeen = config.global_context != null;
+  for (const dbCol of dbExtraCollections) {
+    // Global context from DB
+    if (!dbGlobalSeen && dbCol.name === "__global__" && dbCol.context) {
+      const ctxMap = dbCol.context as ContextMap;
+      for (const [path, context] of Object.entries(ctxMap)) {
+        results.push({ collection: "*", path, context });
+      }
+    }
+    // Collection contexts from DB
+    if (!yamlContextNames.has(dbCol.name) && dbCol.context) {
+      const ctxMap = dbCol.context as ContextMap;
+      for (const [path, context] of Object.entries(ctxMap)) {
+        results.push({
+          collection: dbCol.name,
           path,
           context,
         });

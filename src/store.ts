@@ -1150,8 +1150,7 @@ export function upsertStoreCollection(
       pattern = excluded.pattern,
       ignore_patterns = excluded.ignore_patterns,
       include_by_default = excluded.include_by_default,
-      update_command = excluded.update_command,
-      context = excluded.context
+      update_command = excluded.update_command
   `,
   ).run(
     name,
@@ -1295,12 +1294,7 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
     }
   }
 
-  // Sync global context
-  if (config.global_context !== undefined) {
-    setStoreGlobalContext(db, config.global_context);
-  } else {
-    setStoreGlobalContext(db, undefined);
-  }
+  // Context is DB-sourced (cloud sync + direct writes), not overwritten from YAML
 
   // Save config hash
   db.prepare(

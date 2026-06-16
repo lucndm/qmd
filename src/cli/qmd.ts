@@ -81,6 +81,7 @@ import {
   getCollectionsWithoutContext,
   getTopLevelPathsWithoutContext,
   getStoreCollections,
+  getStoreGlobalContext,
   handelize,
   hybridQuery,
   vectorSearchQuery,
@@ -152,6 +153,7 @@ import {
   listAllContexts,
   setConfigIndexName,
   setDbCollections,
+  setDbGlobalContext,
   loadConfig,
   saveConfig,
   setConfigSource,
@@ -201,9 +203,10 @@ function resolveCliLLM(): LlamaCpp | OpenAILLM {
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
-    // Inject cloud-synced collections from DB into collections.ts module state
-    // so getCollection/listCollections resolve cross-instance collections
+    // Inject cloud-synced collections + global context from DB into collections.ts module state
+    // so getCollection/listCollections/listAllContexts resolve cross-instance data
     setDbCollections(getStoreCollections(store.db));
+    setDbGlobalContext(getStoreGlobalContext(store.db));
     try {
       const config = loadConfig();
       syncConfigToDb(store.db, config);
