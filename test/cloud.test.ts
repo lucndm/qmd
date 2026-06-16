@@ -1,4 +1,12 @@
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import {
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -118,7 +126,9 @@ describe("cloud config", () => {
     };
     saveCloudConfig(config);
 
-    const raw = YAML.parse(require("node:fs").readFileSync(join(testDir, "cloud.yml"), "utf-8"));
+    const raw = YAML.parse(
+      require("node:fs").readFileSync(join(testDir, "cloud.yml"), "utf-8"),
+    );
     expect(Object.keys(raw.remotes)).toEqual(["personal", "team"]);
   });
 });
@@ -188,7 +198,8 @@ describe("validateConnection (mocked)", () => {
     const { validateConnection } = await import("../src/cloud/client.js");
     const result = await validateConnection({
       url: "libsql://qmd-minhlucnd.aws-ap-northeast-1.turso.io",
-      token: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJnWFFiY21WYUVmR2c3SElfblp6TUV3Iiwib3JnX2lkIjoxMDAwMTgwMzkwfQ.ZdjtcXdfeNygeKHs_yNX47D_pEkjDBvTuIZMHo3SjrB9QXi_VBGpmNB_oc51lGupzxPzmcgT4ZfY43vP-EyMCQ",
+      token:
+        "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJnWFFiY21WYUVmR2c3SElfblp6TUV3Iiwib3JnX2lkIjoxMDAwMTgwMzkwfQ.ZdjtcXdfeNygeKHs_yNX47D_pEkjDBvTuIZMHo3SjrB9QXi_VBGpmNB_oc51lGupzxPzmcgT4ZfY43vP-EyMCQ",
     });
 
     if (process.env.CI) {
@@ -223,11 +234,23 @@ describe("push — schema detection", () => {
     db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
-    try { loadSqliteVec(db); } catch { /* vec may not load in test */ }
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`);
+    try {
+      loadSqliteVec(db);
+    } catch {
+      /* vec may not load in test */
+    }
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`,
+    );
   });
 
   afterAll(async () => {
@@ -236,8 +259,12 @@ describe("push — schema detection", () => {
   });
 
   test("detects regular tables", () => {
-    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'documents_fts_%'").all()) as { name: string }[];
-    const names = tables.map(t => t.name);
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'documents_fts_%'",
+      )
+      .all() as { name: string }[];
+    const names = tables.map((t) => t.name);
     expect(names).toContain("content");
     expect(names).toContain("documents");
     expect(names).toContain("store_config");
@@ -245,11 +272,19 @@ describe("push — schema detection", () => {
   });
 
   test("FTS internal tables excluded", () => {
-    const allTables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()) as { name: string }[];
-    const internalFts = allTables.filter(t => t.name.startsWith("documents_fts_"));
+    const allTables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+      )
+      .all() as { name: string }[];
+    const internalFts = allTables.filter((t) =>
+      t.name.startsWith("documents_fts_"),
+    );
     expect(internalFts.length).toBeGreaterThan(0);
-    const filtered = allTables.filter(t => !t.name.startsWith("documents_fts_"));
-    expect(filtered.find(t => t.name === "documents_fts")).toBeTruthy();
+    const filtered = allTables.filter(
+      (t) => !t.name.startsWith("documents_fts_"),
+    );
+    expect(filtered.find((t) => t.name === "documents_fts")).toBeTruthy();
   });
 });
 
@@ -258,16 +293,16 @@ describe("push — ensureIfNotExists", () => {
     const mod = await import("../src/cloud/push.js");
     const fn = (mod as any).ensureIfNotExists as (ddl: string) => string;
     expect(fn("CREATE TABLE content (hash TEXT PRIMARY KEY)")).toBe(
-      "CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)"
+      "CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)",
     );
   });
 
   test("preserves existing IF NOT EXISTS", async () => {
     const mod = await import("../src/cloud/push.js");
     const fn = (mod as any).ensureIfNotExists as (ddl: string) => string;
-    expect(fn("CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)")).toBe(
-      "CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)"
-    );
+    expect(
+      fn("CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)"),
+    ).toBe("CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY)");
   });
 });
 
@@ -298,24 +333,57 @@ describe("push — pushToRemote with mock client", () => {
     db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
-    try { loadSqliteVec(db); } catch {}
+    try {
+      loadSqliteVec(db);
+    } catch {}
 
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_collections (name TEXT PRIMARY KEY, path TEXT NOT NULL, pattern TEXT NOT NULL DEFAULT '**/*.md')`);
-    db.exec(`CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_collections (name TEXT PRIMARY KEY, path TEXT NOT NULL, pattern TEXT NOT NULL DEFAULT '**/*.md')`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`,
+    );
 
-    const insert = db.prepare("INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)");
-    const insertDoc = db.prepare("INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)");
+    const insert = db.prepare(
+      "INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)",
+    );
+    const insertDoc = db.prepare(
+      "INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+    );
     for (let i = 0; i < 5; i++) {
       const hash = `hash${i}`;
       insert.run(hash, `document content ${i}`, "2026-01-01");
-      insertDoc.run("test", `doc${i}.md`, `Doc ${i}`, hash, "2026-01-01", "2026-01-01");
+      insertDoc.run(
+        "test",
+        `doc${i}.md`,
+        `Doc ${i}`,
+        hash,
+        "2026-01-01",
+        "2026-01-01",
+      );
     }
-    db.prepare("INSERT INTO store_config (key, value) VALUES (?, ?)").run("config_hash", "abc");
+    db.prepare("INSERT INTO store_config (key, value) VALUES (?, ?)").run(
+      "config_hash",
+      "abc",
+    );
+    db.prepare(
+      "INSERT INTO store_collections (name, path, pattern) VALUES (?, ?, ?)",
+    ).run("test", "/test", "**/*.md");
   });
 
   afterAll(async () => {
@@ -328,10 +396,12 @@ describe("push — pushToRemote with mock client", () => {
     const client = createMockClient();
     await pushToRemote(db, client as any);
 
-    const createStmts = executed.map(e => e.sql).filter(s => s.startsWith("CREATE"));
+    const createStmts = executed
+      .map((e) => e.sql)
+      .filter((s) => s.startsWith("CREATE"));
     expect(createStmts.length).toBeGreaterThan(0);
-    expect(createStmts.some(s => s.includes("content"))).toBe(true);
-    expect(createStmts.some(s => s.includes("documents"))).toBe(true);
+    expect(createStmts.some((s) => s.includes("content"))).toBe(true);
+    expect(createStmts.some((s) => s.includes("documents"))).toBe(true);
   });
 
   test("push uploads data via batch", async () => {
@@ -350,20 +420,27 @@ describe("push — pushToRemote with mock client", () => {
     const client = createMockClient();
     await pushToRemote(db, client as any);
 
-    const pushStmt = executed.find(e => e.sql.includes("store_config") && e.sql.includes("INSERT"));
+    const pushStmt = executed.find(
+      (e) => e.sql.includes("store_config") && e.sql.includes("INSERT"),
+    );
     expect(pushStmt).toBeTruthy();
     expect(pushStmt!.args?.[0]).toBe("last_push");
     expect(typeof pushStmt!.args?.[1]).toBe("string");
   });
 
-  test("push deletes remote data before inserting", async () => {
+  test("push deletes remote data for owned collections before inserting", async () => {
     const { pushToRemote } = await import("../src/cloud/push.js");
     const client = createMockClient();
     await pushToRemote(db, client as any);
 
-    const deleteStmts = executed.filter(e => e.sql.startsWith("DELETE"));
+    const deleteStmts = executed.filter((e) => e.sql.startsWith("DELETE"));
     expect(deleteStmts.length).toBeGreaterThan(0);
-    expect(deleteStmts.some(e => e.sql.includes("content"))).toBe(true);
+    // documents table gets DELETE WHERE collection IN (...) — not DELETE ALL
+    expect(deleteStmts.some((e) => e.sql.includes("documents"))).toBe(true);
+    // content table should NOT have DELETE (uses INSERT OR IGNORE for merge)
+    expect(deleteStmts.some((e) => e.sql.includes("DELETE FROM content"))).toBe(
+      false,
+    );
   });
 
   test("push is idempotent", async () => {
@@ -382,7 +459,7 @@ describe("push — pushToRemote with mock client", () => {
     const client = createMockClient();
     await pushToRemote(db, client as any);
 
-    const contentBatch = batched.find(b => b[0]?.sql.includes("content"));
+    const contentBatch = batched.find((b) => b[0]?.sql.includes("content"));
     expect(contentBatch).toBeTruthy();
     expect(contentBatch!.length).toBe(5);
     const firstRow = contentBatch![0];
@@ -399,22 +476,46 @@ describe("push — vec0 table with mock", () => {
     testDir = await mkdtemp(join(tmpdir(), "qmd-push-vec-"));
     db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
-    try { loadSqliteVec(db); } catch {}
-
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`);
-
-    db.exec(`CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`);
     try {
-      db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[8] distance_metric=cosine)`);
-      const embedding = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+      loadSqliteVec(db);
+    } catch {}
+
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`,
+    );
+
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`,
+    );
+    try {
+      db.exec(
+        `CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[8] distance_metric=cosine)`,
+      );
+      const embedding = new Float32Array([
+        0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+      ]);
       const hash = "testhash";
-      db.prepare("INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)").run(hash, "test", "2026-01-01");
-      db.prepare("INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)").run("test", "t.md", "T", hash, "2026-01-01", "2026-01-01");
-      db.prepare("INSERT INTO content_vectors (hash, seq, model) VALUES (?, ?, ?)").run(hash, 0, "test-model");
-      db.prepare("INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)").run(`${hash}_0`, embedding);
+      db.prepare(
+        "INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)",
+      ).run(hash, "test", "2026-01-01");
+      db.prepare(
+        "INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run("test", "t.md", "T", hash, "2026-01-01", "2026-01-01");
+      db.prepare(
+        "INSERT INTO content_vectors (hash, seq, model) VALUES (?, ?, ?)",
+      ).run(hash, 0, "test-model");
+      db.prepare(
+        "INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)",
+      ).run(`${hash}_0`, embedding);
     } catch {
       // vec0 not available, skip vec tests
     }
@@ -426,14 +527,22 @@ describe("push — vec0 table with mock", () => {
   });
 
   test("vec0 table detected in schema", () => {
-    const vecTables = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'").all() as { name: string; sql: string }[];
+    const vecTables = db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'",
+      )
+      .all() as { name: string; sql: string }[];
     if (vecTables.length === 0) return;
     expect(vecTables[0].name).toBe("vectors_vec");
     expect(vecTables[0].sql).toContain("float[8]");
   });
 
   test("vec0 data pushed as FLOAT32 with vector32()", async () => {
-    const vecCheck = db.prepare("SELECT count(*) as cnt FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'").get() as { cnt: number };
+    const vecCheck = db
+      .prepare(
+        "SELECT count(*) as cnt FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'",
+      )
+      .get() as { cnt: number };
     if (vecCheck.cnt === 0) return;
 
     const { pushToRemote } = await import("../src/cloud/push.js");
@@ -453,11 +562,11 @@ describe("push — vec0 table with mock", () => {
 
     await pushToRemote(db, client as any);
 
-    const vecCreate = executed.find(e => e.sql.includes("FLOAT32"));
+    const vecCreate = executed.find((e) => e.sql.includes("FLOAT32"));
     expect(vecCreate).toBeTruthy();
     expect(vecCreate!.sql).toContain("FLOAT32(8)");
 
-    const vecBatch = batched.find(b => b[0]?.sql.includes("vector32"));
+    const vecBatch = batched.find((b) => b[0]?.sql.includes("vector32"));
     expect(vecBatch).toBeTruthy();
     expect(vecBatch![0].args?.[0]).toBe("testhash_0");
     const embeddingArg = vecBatch![0].args?.[1] as string;
@@ -477,10 +586,18 @@ describe("push — empty database", () => {
     db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`,
+    );
   });
 
   afterAll(async () => {
@@ -506,7 +623,7 @@ describe("push — empty database", () => {
     expect(result.tables.content.rows).toBe(0);
     expect(result.tables.documents.rows).toBe(0);
 
-    const deleteStmts = executed.filter(e => e.sql.startsWith("DELETE"));
+    const deleteStmts = executed.filter((e) => e.sql.startsWith("DELETE"));
     expect(deleteStmts.length).toBe(0);
   });
 });
@@ -525,14 +642,20 @@ function createMockPullClient(remoteData: {
       const lc = sql.trim().toLowerCase();
 
       if (lc.startsWith("select name, type, sql from sqlite_master")) {
-        return { rows: remoteData.schema.map(s => ({ name: s.name, type: s.type, sql: s.sql })) };
+        return {
+          rows: remoteData.schema.map((s) => ({
+            name: s.name,
+            type: s.type,
+            sql: s.sql,
+          })),
+        };
       }
       if (lc.startsWith("pragma table_info")) {
         const match = sql.match(/table_info\("([^"]+)"\)/);
         const tableName = match?.[1];
         const sampleRow = tableName && remoteData.tables[tableName]?.[0];
         if (sampleRow) {
-          return { rows: Object.keys(sampleRow).map(k => ({ name: k })) };
+          return { rows: Object.keys(sampleRow).map((k) => ({ name: k })) };
         }
         return { rows: [] };
       }
@@ -542,7 +665,11 @@ function createMockPullClient(remoteData: {
         const cnt = tableName ? (remoteData.tables[tableName]?.length ?? 0) : 0;
         return { rows: [{ cnt }] };
       }
-      if (lc.includes("select") && lc.includes("from") && !lc.includes("sqlite_master")) {
+      if (
+        lc.includes("select") &&
+        lc.includes("from") &&
+        !lc.includes("sqlite_master")
+      ) {
         const match = sql.match(/from\s+(\w+)/i);
         const tableName = match?.[1];
         const rows = tableName ? (remoteData.tables[tableName] ?? []) : [];
@@ -551,12 +678,18 @@ function createMockPullClient(remoteData: {
           const limit = parseInt(limitMatch[1]);
           const offset = parseInt(limitMatch[2]);
           const colsMatch = sql.match(/select\s+(.+?)\s+from/i);
-          const cols = colsMatch?.[1]?.split(",").map(c => c.trim()) ?? Object.keys(rows[0] ?? {});
-          return { rows: rows.slice(offset, offset + limit).map(r => {
-            const filtered: Record<string, unknown> = {};
-            for (const c of cols) { filtered[c] = r[c]; }
-            return filtered;
-          })};
+          const cols =
+            colsMatch?.[1]?.split(",").map((c) => c.trim()) ??
+            Object.keys(rows[0] ?? {});
+          return {
+            rows: rows.slice(offset, offset + limit).map((r) => {
+              const filtered: Record<string, unknown> = {};
+              for (const c of cols) {
+                filtered[c] = r[c];
+              }
+              return filtered;
+            }),
+          };
         }
         return { rows };
       }
@@ -574,10 +707,26 @@ describe("pull — basic pull with mock client", () => {
   let localDbPath: string;
 
   const remoteSchema = [
-    { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-    { name: "documents", type: "table", sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)" },
-    { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
-    { name: "documents_fts", type: "table", sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)" },
+    {
+      name: "content",
+      type: "table",
+      sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+    },
+    {
+      name: "documents",
+      type: "table",
+      sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)",
+    },
+    {
+      name: "store_config",
+      type: "table",
+      sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+    },
+    {
+      name: "documents_fts",
+      type: "table",
+      sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)",
+    },
   ];
 
   const remoteTables: Record<string, Record<string, unknown>[]> = {
@@ -586,12 +735,28 @@ describe("pull — basic pull with mock client", () => {
       { hash: "h2", doc: "doc two", created_at: "2026-01-02" },
     ],
     documents: [
-      { id: 1, collection: "test", path: "a.md", title: "A", hash: "h1", created_at: "2026-01-01", modified_at: "2026-01-01", active: 1 },
-      { id: 2, collection: "test", path: "b.md", title: "B", hash: "h2", created_at: "2026-01-02", modified_at: "2026-01-02", active: 1 },
+      {
+        id: 1,
+        collection: "test",
+        path: "a.md",
+        title: "A",
+        hash: "h1",
+        created_at: "2026-01-01",
+        modified_at: "2026-01-01",
+        active: 1,
+      },
+      {
+        id: 2,
+        collection: "test",
+        path: "b.md",
+        title: "B",
+        hash: "h2",
+        created_at: "2026-01-02",
+        modified_at: "2026-01-02",
+        active: 1,
+      },
     ],
-    store_config: [
-      { key: "last_push", value: "2026-06-11T10:00:00Z" },
-    ],
+    store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
     documents_fts: [],
   };
 
@@ -600,8 +765,12 @@ describe("pull — basic pull with mock client", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-01-01T00:00:00Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-01-01T00:00:00Z')`,
+    );
     db.close();
   });
 
@@ -611,8 +780,13 @@ describe("pull — basic pull with mock client", () => {
 
   test("pull downloads data and DB is valid", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
-    const client = createMockPullClient({ schema: remoteSchema, tables: remoteTables });
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const client = createMockPullClient({
+      schema: remoteSchema,
+      tables: remoteTables,
+    });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
 
     expect(result.swapped).toBe(true);
     expect(result.tables.content.rows).toBe(2);
@@ -620,16 +794,26 @@ describe("pull — basic pull with mock client", () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
 
     const db = openDatabase(localDbPath);
-    const contentCount = (db.prepare("SELECT count(*) as cnt FROM content").get() as { cnt: number }).cnt;
-    const docCount = (db.prepare("SELECT count(*) as cnt FROM documents").get() as { cnt: number }).cnt;
+    const contentCount = (
+      db.prepare("SELECT count(*) as cnt FROM content").get() as { cnt: number }
+    ).cnt;
+    const docCount = (
+      db.prepare("SELECT count(*) as cnt FROM documents").get() as {
+        cnt: number;
+      }
+    ).cnt;
     expect(contentCount).toBe(2);
     expect(docCount).toBe(2);
 
-    const docs = db.prepare("SELECT title FROM documents ORDER BY id").all() as { title: string }[];
+    const docs = db
+      .prepare("SELECT title FROM documents ORDER BY id")
+      .all() as { title: string }[];
     expect(docs[0].title).toBe("A");
     expect(docs[1].title).toBe("B");
 
-    const row = db.prepare("SELECT value FROM store_config WHERE key = 'last_pull'").get() as { value: string } | undefined;
+    const row = db
+      .prepare("SELECT value FROM store_config WHERE key = 'last_pull'")
+      .get() as { value: string } | undefined;
     expect(row).toBeTruthy();
     expect(new Date(row!.value).getTime()).toBeGreaterThan(0);
     db.close();
@@ -645,8 +829,12 @@ describe("pull — already up to date", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T12:00:00Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T12:00:00Z')`,
+    );
     db.close();
   });
 
@@ -658,9 +846,15 @@ describe("pull — already up to date", () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createMockPullClient({
       schema: [
-        { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
+        {
+          name: "store_config",
+          type: "table",
+          sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+        },
       ],
-      tables: { store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }] },
+      tables: {
+        store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
+      },
     });
 
     const result = await pullFromRemote(client as any, localDbPath);
@@ -677,7 +871,9 @@ describe("pull — empty remote", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
     db.close();
   });
 
@@ -689,13 +885,23 @@ describe("pull — empty remote", () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createMockPullClient({
       schema: [
-        { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-        { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
+        {
+          name: "content",
+          type: "table",
+          sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+        },
+        {
+          name: "store_config",
+          type: "table",
+          sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+        },
       ],
       tables: { content: [], store_config: [] },
     });
 
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
     expect(result.swapped).toBe(true);
     expect(result.tables.content.rows).toBe(0);
   });
@@ -706,15 +912,42 @@ describe("pull — idempotent", () => {
   let localDbPath: string;
 
   const remoteSchema = [
-    { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-    { name: "documents", type: "table", sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)" },
-    { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
-    { name: "documents_fts", type: "table", sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)" },
+    {
+      name: "content",
+      type: "table",
+      sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+    },
+    {
+      name: "documents",
+      type: "table",
+      sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)",
+    },
+    {
+      name: "store_config",
+      type: "table",
+      sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+    },
+    {
+      name: "documents_fts",
+      type: "table",
+      sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)",
+    },
   ];
 
   const remoteTables: Record<string, Record<string, unknown>[]> = {
     content: [{ hash: "h1", doc: "hello", created_at: "2026-01-01" }],
-    documents: [{ id: 1, collection: "x", path: "x.md", title: "X", hash: "h1", created_at: "2026-01-01", modified_at: "2026-01-01", active: 1 }],
+    documents: [
+      {
+        id: 1,
+        collection: "x",
+        path: "x.md",
+        title: "X",
+        hash: "h1",
+        created_at: "2026-01-01",
+        modified_at: "2026-01-01",
+        active: 1,
+      },
+    ],
     store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
     documents_fts: [],
   };
@@ -724,7 +957,9 @@ describe("pull — idempotent", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
     db.close();
   });
 
@@ -735,11 +970,21 @@ describe("pull — idempotent", () => {
   test("pull twice produces same result", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
 
-    const client1 = createMockPullClient({ schema: remoteSchema, tables: remoteTables });
-    const r1 = await pullFromRemote(client1 as any, localDbPath, { force: true });
+    const client1 = createMockPullClient({
+      schema: remoteSchema,
+      tables: remoteTables,
+    });
+    const r1 = await pullFromRemote(client1 as any, localDbPath, {
+      force: true,
+    });
 
-    const client2 = createMockPullClient({ schema: remoteSchema, tables: remoteTables });
-    const r2 = await pullFromRemote(client2 as any, localDbPath, { force: true });
+    const client2 = createMockPullClient({
+      schema: remoteSchema,
+      tables: remoteTables,
+    });
+    const r2 = await pullFromRemote(client2 as any, localDbPath, {
+      force: true,
+    });
 
     expect(r1.tables.content.rows).toBe(r2.tables.content.rows);
     expect(r1.tables.documents.rows).toBe(r2.tables.documents.rows);
@@ -755,7 +1000,9 @@ describe("pull — idempotent", () => {
 describe("schema translation — dimensions", () => {
   test("extracts dimensions from vec0 DDL float[N]", async () => {
     const { ensureIfNotExists } = await import("../src/cloud/push.js");
-    expect(ensureIfNotExists("CREATE TABLE t (x INT)")).toContain("IF NOT EXISTS");
+    expect(ensureIfNotExists("CREATE TABLE t (x INT)")).toContain(
+      "IF NOT EXISTS",
+    );
   });
 
   test("DEFAULT_EMBEDDING_DIM is 1024", async () => {
@@ -764,25 +1011,29 @@ describe("schema translation — dimensions", () => {
   });
 
   test("vec0 DDL with float[768] detected correctly", async () => {
-    const ddl = "CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine)";
+    const ddl =
+      "CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine)";
     const dimMatch = ddl.match(/float\[(\d+)\]/);
     expect(dimMatch?.[1]).toBe("768");
   });
 
   test("vec0 DDL with float[1024] detected correctly", async () => {
-    const ddl = "CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1024] distance_metric=cosine)";
+    const ddl =
+      "CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1024] distance_metric=cosine)";
     const dimMatch = ddl.match(/float\[(\d+)\]/);
     expect(dimMatch?.[1]).toBe("1024");
   });
 
   test("remote FLOAT32(512) DDL dims extracted on pull", () => {
-    const ddl = "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(512))";
+    const ddl =
+      "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(512))";
     const dimMatch = ddl.match(/FLOAT32\((\d+)\)/i);
     expect(dimMatch?.[1]).toBe("512");
   });
 
   test("remote FLOAT32 without dimension falls back to default", () => {
-    const ddl = "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32)";
+    const ddl =
+      "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32)";
     const dimMatch = ddl.match(/FLOAT32\((\d+)\)/i);
     expect(dimMatch?.[1]).toBeUndefined();
   });
@@ -818,15 +1069,41 @@ describe("pull — vector embedding format handling", () => {
   let localDbPath: string;
 
   const remoteSchema = [
-    { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-    { name: "documents", type: "table", sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)" },
-    { name: "content_vectors", type: "table", sql: "CREATE TABLE content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))" },
-    { name: "vectors_vec", type: "table", sql: "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(8))" },
-    { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
-    { name: "documents_fts", type: "table", sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)" },
+    {
+      name: "content",
+      type: "table",
+      sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+    },
+    {
+      name: "documents",
+      type: "table",
+      sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)",
+    },
+    {
+      name: "content_vectors",
+      type: "table",
+      sql: "CREATE TABLE content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))",
+    },
+    {
+      name: "vectors_vec",
+      type: "table",
+      sql: "CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding FLOAT32(8))",
+    },
+    {
+      name: "store_config",
+      type: "table",
+      sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+    },
+    {
+      name: "documents_fts",
+      type: "table",
+      sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)",
+    },
   ];
 
-  function createVecPullClient(embeddingFormat: "arraybuffer" | "string" | "array" | "buffer") {
+  function createVecPullClient(
+    embeddingFormat: "arraybuffer" | "string" | "array" | "buffer",
+  ) {
     const dims = 8;
     const values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
 
@@ -851,17 +1128,20 @@ describe("pull — vector embedding format handling", () => {
         { hash: "vhash1", doc: "vector doc", created_at: "2026-01-01" },
       ],
       documents: [
-        { id: 1, collection: "test", path: "v.md", title: "V", hash: "vhash1", created_at: "2026-01-01", modified_at: "2026-01-01", active: 1 },
+        {
+          id: 1,
+          collection: "test",
+          path: "v.md",
+          title: "V",
+          hash: "vhash1",
+          created_at: "2026-01-01",
+          modified_at: "2026-01-01",
+          active: 1,
+        },
       ],
-      content_vectors: [
-        { hash: "vhash1", seq: 0, model: "test-model" },
-      ],
-      vectors_vec: [
-        { hash_seq: "vhash1_0", embedding },
-      ],
-      store_config: [
-        { key: "last_push", value: "2026-06-11T10:00:00Z" },
-      ],
+      content_vectors: [{ hash: "vhash1", seq: 0, model: "test-model" }],
+      vectors_vec: [{ hash_seq: "vhash1_0", embedding }],
+      store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
       documents_fts: [],
     };
 
@@ -873,8 +1153,12 @@ describe("pull — vector embedding format handling", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-01-01T00:00:00Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-01-01T00:00:00Z')`,
+    );
     db.close();
   });
 
@@ -885,14 +1169,20 @@ describe("pull — vector embedding format handling", () => {
   test("handles ArrayBuffer embedding from Turso", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createVecPullClient("arraybuffer");
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
 
     expect(result.swapped).toBe(true);
     expect(result.tables.vectors_vec.rows).toBe(1);
 
     const db = openDatabase(localDbPath);
-    try { loadSqliteVec(db); } catch {}
-    const vecRow = db.prepare("SELECT hash_seq FROM vectors_vec WHERE hash_seq = ?").get("vhash1_0") as { hash_seq: string } | undefined;
+    try {
+      loadSqliteVec(db);
+    } catch {}
+    const vecRow = db
+      .prepare("SELECT hash_seq FROM vectors_vec WHERE hash_seq = ?")
+      .get("vhash1_0") as { hash_seq: string } | undefined;
     expect(vecRow).toBeTruthy();
     expect(vecRow!.hash_seq).toBe("vhash1_0");
     db.close();
@@ -901,7 +1191,9 @@ describe("pull — vector embedding format handling", () => {
   test("handles string (JSON) embedding from Turso", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createVecPullClient("string");
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
 
     expect(result.swapped).toBe(true);
     expect(result.tables.vectors_vec.rows).toBe(1);
@@ -910,7 +1202,9 @@ describe("pull — vector embedding format handling", () => {
   test("handles array embedding from Turso", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createVecPullClient("array");
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
 
     expect(result.swapped).toBe(true);
     expect(result.tables.vectors_vec.rows).toBe(1);
@@ -919,7 +1213,9 @@ describe("pull — vector embedding format handling", () => {
   test("handles Buffer embedding", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createVecPullClient("buffer");
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
 
     expect(result.swapped).toBe(true);
     expect(result.tables.vectors_vec.rows).toBe(1);
@@ -935,20 +1231,62 @@ describe("pull — FTS rebuild after pull", () => {
   let localDbPath: string;
 
   const remoteSchema = [
-    { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-    { name: "documents", type: "table", sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)" },
-    { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
-    { name: "documents_fts", type: "table", sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)" },
+    {
+      name: "content",
+      type: "table",
+      sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+    },
+    {
+      name: "documents",
+      type: "table",
+      sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)",
+    },
+    {
+      name: "store_config",
+      type: "table",
+      sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+    },
+    {
+      name: "documents_fts",
+      type: "table",
+      sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)",
+    },
   ];
 
   const remoteTables: Record<string, Record<string, unknown>[]> = {
     content: [
-      { hash: "fts1", doc: "Machine learning algorithms for search", created_at: "2026-01-01" },
-      { hash: "fts2", doc: "Database indexing strategies", created_at: "2026-01-02" },
+      {
+        hash: "fts1",
+        doc: "Machine learning algorithms for search",
+        created_at: "2026-01-01",
+      },
+      {
+        hash: "fts2",
+        doc: "Database indexing strategies",
+        created_at: "2026-01-02",
+      },
     ],
     documents: [
-      { id: 1, collection: "notes", path: "ml.md", title: "ML Notes", hash: "fts1", created_at: "2026-01-01", modified_at: "2026-01-01", active: 1 },
-      { id: 2, collection: "notes", path: "db.md", title: "DB Notes", hash: "fts2", created_at: "2026-01-02", modified_at: "2026-01-02", active: 1 },
+      {
+        id: 1,
+        collection: "notes",
+        path: "ml.md",
+        title: "ML Notes",
+        hash: "fts1",
+        created_at: "2026-01-01",
+        modified_at: "2026-01-01",
+        active: 1,
+      },
+      {
+        id: 2,
+        collection: "notes",
+        path: "db.md",
+        title: "DB Notes",
+        hash: "fts2",
+        created_at: "2026-01-02",
+        modified_at: "2026-01-02",
+        active: 1,
+      },
     ],
     store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
     documents_fts: [],
@@ -959,7 +1297,9 @@ describe("pull — FTS rebuild after pull", () => {
     localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
     db.close();
   });
 
@@ -969,25 +1309,41 @@ describe("pull — FTS rebuild after pull", () => {
 
   test("FTS table rebuilt from documents+content after pull", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
-    const client = createMockPullClient({ schema: remoteSchema, tables: remoteTables });
+    const client = createMockPullClient({
+      schema: remoteSchema,
+      tables: remoteTables,
+    });
     await pullFromRemote(client as any, localDbPath, { force: true });
 
     const db = openDatabase(localDbPath);
-    const ftsResults = db.prepare("SELECT * FROM documents_fts WHERE documents_fts MATCH 'machine'").all();
+    const ftsResults = db
+      .prepare(
+        "SELECT * FROM documents_fts WHERE documents_fts MATCH 'machine'",
+      )
+      .all();
     expect(ftsResults.length).toBe(1);
     db.close();
   });
 
   test("FTS search works for both documents after pull", async () => {
     const { pullFromRemote } = await import("../src/cloud/pull.js");
-    const client = createMockPullClient({ schema: remoteSchema, tables: remoteTables });
+    const client = createMockPullClient({
+      schema: remoteSchema,
+      tables: remoteTables,
+    });
     await pullFromRemote(client as any, localDbPath, { force: true });
 
     const db = openDatabase(localDbPath);
-    const dbResults = db.prepare("SELECT * FROM documents_fts WHERE documents_fts MATCH 'database'").all();
+    const dbResults = db
+      .prepare(
+        "SELECT * FROM documents_fts WHERE documents_fts MATCH 'database'",
+      )
+      .all();
     expect(dbResults.length).toBe(1);
 
-    const allFts = db.prepare("SELECT count(*) as cnt FROM documents_fts").get() as { cnt: number };
+    const allFts = db
+      .prepare("SELECT count(*) as cnt FROM documents_fts")
+      .get() as { cnt: number };
     expect(allFts.cnt).toBe(2);
     db.close();
   });
@@ -1003,14 +1359,26 @@ describe("pull — timestamp logic", () => {
     const localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T12:00:00Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T12:00:00Z')`,
+    );
     db.close();
 
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const client = createMockPullClient({
-      schema: [{ name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" }],
-      tables: { store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }] },
+      schema: [
+        {
+          name: "store_config",
+          type: "table",
+          sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+        },
+      ],
+      tables: {
+        store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
+      },
     });
 
     const result = await pullFromRemote(client as any, localDbPath);
@@ -1024,14 +1392,26 @@ describe("pull — timestamp logic", () => {
     const localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T08:00:00Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2026-06-11T08:00:00Z')`,
+    );
     db.close();
 
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const remoteSchema = [
-      { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-      { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
+      {
+        name: "content",
+        type: "table",
+        sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+      },
+      {
+        name: "store_config",
+        type: "table",
+        sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+      },
     ];
     const client = createMockPullClient({
       schema: remoteSchema,
@@ -1052,14 +1432,26 @@ describe("pull — timestamp logic", () => {
     const localDbPath = join(testDir, "local.sqlite");
     const db = openDatabase(localDbPath);
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`INSERT INTO store_config (key, value) VALUES ('last_pull', '2099-12-31T23:59:59Z')`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `INSERT INTO store_config (key, value) VALUES ('last_pull', '2099-12-31T23:59:59Z')`,
+    );
     db.close();
 
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const remoteSchema = [
-      { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-      { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
+      {
+        name: "content",
+        type: "table",
+        sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+      },
+      {
+        name: "store_config",
+        type: "table",
+        sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+      },
     ];
     const client = createMockPullClient({
       schema: remoteSchema,
@@ -1069,7 +1461,9 @@ describe("pull — timestamp logic", () => {
       },
     });
 
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
     expect(result.swapped).toBe(true);
 
     await rm(testDir, { recursive: true, force: true });
@@ -1087,27 +1481,58 @@ describe("pull — non-existent local DB", () => {
 
     const { pullFromRemote } = await import("../src/cloud/pull.js");
     const remoteSchema = [
-      { name: "content", type: "table", sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)" },
-      { name: "documents", type: "table", sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)" },
-      { name: "store_config", type: "table", sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)" },
-      { name: "documents_fts", type: "table", sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)" },
+      {
+        name: "content",
+        type: "table",
+        sql: "CREATE TABLE content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)",
+      },
+      {
+        name: "documents",
+        type: "table",
+        sql: "CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT, path TEXT, title TEXT, hash TEXT, created_at TEXT, modified_at TEXT, active INTEGER DEFAULT 1)",
+      },
+      {
+        name: "store_config",
+        type: "table",
+        sql: "CREATE TABLE store_config (key TEXT PRIMARY KEY, value TEXT)",
+      },
+      {
+        name: "documents_fts",
+        type: "table",
+        sql: "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body)",
+      },
     ];
     const client = createMockPullClient({
       schema: remoteSchema,
       tables: {
         content: [{ hash: "h1", doc: "hello", created_at: "2026-01-01" }],
-        documents: [{ id: 1, collection: "x", path: "x.md", title: "X", hash: "h1", created_at: "2026-01-01", modified_at: "2026-01-01", active: 1 }],
+        documents: [
+          {
+            id: 1,
+            collection: "x",
+            path: "x.md",
+            title: "X",
+            hash: "h1",
+            created_at: "2026-01-01",
+            modified_at: "2026-01-01",
+            active: 1,
+          },
+        ],
         store_config: [{ key: "last_push", value: "2026-06-11T10:00:00Z" }],
         documents_fts: [],
       },
     });
 
-    const result = await pullFromRemote(client as any, localDbPath, { force: true });
+    const result = await pullFromRemote(client as any, localDbPath, {
+      force: true,
+    });
     expect(result.swapped).toBe(true);
     expect(existsSync(localDbPath)).toBe(true);
 
     const db = openDatabase(localDbPath);
-    const cnt = (db.prepare("SELECT count(*) as cnt FROM content").get() as { cnt: number }).cnt;
+    const cnt = (
+      db.prepare("SELECT count(*) as cnt FROM content").get() as { cnt: number }
+    ).cnt;
     expect(cnt).toBe(1);
     db.close();
 
@@ -1129,16 +1554,33 @@ describe("push — large batch chunking", () => {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
 
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
 
-    const insert = db.prepare("INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)");
-    const insertDoc = db.prepare("INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)");
+    const insert = db.prepare(
+      "INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)",
+    );
+    const insertDoc = db.prepare(
+      "INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+    );
     for (let i = 0; i < 120; i++) {
       const hash = `batchhash${i}`;
       insert.run(hash, `content ${i}`, "2026-01-01");
-      insertDoc.run("batch", `doc${i}.md`, `Doc ${i}`, hash, "2026-01-01", "2026-01-01");
+      insertDoc.run(
+        "batch",
+        `doc${i}.md`,
+        `Doc ${i}`,
+        hash,
+        "2026-01-01",
+        "2026-01-01",
+      );
     }
   });
 
@@ -1151,7 +1593,9 @@ describe("push — large batch chunking", () => {
     const { pushToRemote } = await import("../src/cloud/push.js");
     const batched: { sql: string; args?: unknown[] }[][] = [];
     const client = {
-      async execute(sql: string, args?: unknown[]) { return { rows: [] }; },
+      async execute(sql: string, args?: unknown[]) {
+        return { rows: [] };
+      },
       async batch(stmts: { sql: string; args?: unknown[] }[]) {
         batched.push(stmts);
         return stmts.map(() => ({ rows: [] }));
@@ -1161,7 +1605,7 @@ describe("push — large batch chunking", () => {
 
     await pushToRemote(db, client as any);
 
-    const contentBatches = batched.filter(b => b[0]?.sql.includes("content"));
+    const contentBatches = batched.filter((b) => b[0]?.sql.includes("content"));
     expect(contentBatches.length).toBe(3);
     expect(contentBatches[0].length).toBe(50);
     expect(contentBatches[1].length).toBe(50);
@@ -1181,23 +1625,45 @@ describe("push — vec0 batch size", () => {
     testDir = await mkdtemp(join(tmpdir(), "qmd-push-vecbatch-"));
     db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
-    try { loadSqliteVec(db); } catch {}
+    try {
+      loadSqliteVec(db);
+    } catch {}
 
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content_vectors (hash TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0, model TEXT NOT NULL, PRIMARY KEY (hash, seq))`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`,
+    );
 
     try {
-      db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[4] distance_metric=cosine)`);
+      db.exec(
+        `CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[4] distance_metric=cosine)`,
+      );
       for (let i = 0; i < 60; i++) {
         const hash = `vbatch${i}`;
         const embedding = new Float32Array([i * 0.01, 0.5, 0.3, 0.1]);
-        db.prepare("INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)").run(hash, `vec doc ${i}`, "2026-01-01");
-        db.prepare("INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)").run("vbatch", `v${i}.md`, `V${i}`, hash, "2026-01-01", "2026-01-01");
-        db.prepare("INSERT INTO content_vectors (hash, seq, model) VALUES (?, ?, ?)").run(hash, 0, "test");
-        db.prepare("INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)").run(`${hash}_0`, embedding);
+        db.prepare(
+          "INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)",
+        ).run(hash, `vec doc ${i}`, "2026-01-01");
+        db.prepare(
+          "INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).run("vbatch", `v${i}.md`, `V${i}`, hash, "2026-01-01", "2026-01-01");
+        db.prepare(
+          "INSERT INTO content_vectors (hash, seq, model) VALUES (?, ?, ?)",
+        ).run(hash, 0, "test");
+        db.prepare(
+          "INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)",
+        ).run(`${hash}_0`, embedding);
       }
     } catch {
       // vec0 not available
@@ -1210,13 +1676,19 @@ describe("push — vec0 batch size", () => {
   });
 
   test("vec data uploaded in batches of 25", async () => {
-    const vecCheck = db.prepare("SELECT count(*) as cnt FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'").get() as { cnt: number };
+    const vecCheck = db
+      .prepare(
+        "SELECT count(*) as cnt FROM sqlite_master WHERE type='table' AND sql LIKE '%USING vec0%'",
+      )
+      .get() as { cnt: number };
     if (vecCheck.cnt === 0) return;
 
     const { pushToRemote } = await import("../src/cloud/push.js");
     const batched: { sql: string; args?: unknown[] }[][] = [];
     const client = {
-      async execute(sql: string, args?: unknown[]) { return { rows: [] }; },
+      async execute(sql: string, args?: unknown[]) {
+        return { rows: [] };
+      },
       async batch(stmts: { sql: string; args?: unknown[] }[]) {
         batched.push(stmts);
         return stmts.map(() => ({ rows: [] }));
@@ -1227,7 +1699,7 @@ describe("push — vec0 batch size", () => {
     const result = await pushToRemote(db, client as any);
     expect(result.tables.vectors_vec.rows).toBe(60);
 
-    const vecBatches = batched.filter(b => b[0]?.sql.includes("vector32"));
+    const vecBatches = batched.filter((b) => b[0]?.sql.includes("vector32"));
     expect(vecBatches.length).toBe(3);
     expect(vecBatches[0].length).toBe(25);
     expect(vecBatches[1].length).toBe(25);
@@ -1244,15 +1716,26 @@ describe("push — internal table filtering", () => {
     const testDir = await mkdtemp(join(tmpdir(), "qmd-push-filter-"));
     const db = openDatabase(join(testDir, "test.sqlite"));
     db.exec("PRAGMA journal_mode = WAL");
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+    );
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body)`,
+    );
 
     const { pushToRemote } = await import("../src/cloud/push.js");
     const executed: { sql: string }[] = [];
     const client = {
-      async execute(sql: string) { executed.push({ sql }); return { rows: [] }; },
-      async batch(stmts: { sql: string }[]) { return stmts.map(() => ({ rows: [] })); },
+      async execute(sql: string) {
+        executed.push({ sql });
+        return { rows: [] };
+      },
+      async batch(stmts: { sql: string }[]) {
+        return stmts.map(() => ({ rows: [] }));
+      },
       close() {},
     };
 
@@ -1260,7 +1743,9 @@ describe("push — internal table filtering", () => {
     db.close();
     await rm(testDir, { recursive: true, force: true });
 
-    const ftsInternalDDLs = executed.filter(e => e.sql.includes("documents_fts_") && e.sql.startsWith("CREATE"));
+    const ftsInternalDDLs = executed.filter(
+      (e) => e.sql.includes("documents_fts_") && e.sql.startsWith("CREATE"),
+    );
     expect(ftsInternalDDLs.length).toBe(0);
   });
 });
@@ -1269,76 +1754,126 @@ describe("push — internal table filtering", () => {
 // Integration test (real Turso) — guarded by CLOUD_TEST=1
 // =============================================================================
 
-describe.skipIf(!process.env.CLOUD_TEST)("integration — real Turso round-trip", () => {
-  test("push → pull round-trip preserves data", async () => {
-    const { createCloudClient, validateConnection } = await import("../src/cloud/client.js");
+describe.skipIf(!process.env.CLOUD_TEST)(
+  "integration — real Turso round-trip",
+  () => {
+    test("push → pull round-trip preserves data", async () => {
+      const { createCloudClient, validateConnection } =
+        await import("../src/cloud/client.js");
 
-    const remoteUrl = process.env.QMD_CLOUD_URL;
-    const remoteToken = process.env.QMD_CLOUD_TOKEN;
-    if (!remoteUrl || !remoteToken) {
-      throw new Error("Set QMD_CLOUD_URL and QMD_CLOUD_TOKEN for integration test");
-    }
+      const remoteUrl = process.env.QMD_CLOUD_URL;
+      const remoteToken = process.env.QMD_CLOUD_TOKEN;
+      if (!remoteUrl || !remoteToken) {
+        throw new Error(
+          "Set QMD_CLOUD_URL and QMD_CLOUD_TOKEN for integration test",
+        );
+      }
 
-    const remote = { url: remoteUrl, token: remoteToken };
-    const validation = await validateConnection(remote);
-    expect(validation.ok).toBe(true);
+      const remote = { url: remoteUrl, token: remoteToken };
+      const validation = await validateConnection(remote);
+      expect(validation.ok).toBe(true);
 
-    const client = await createCloudClient(remote);
+      const client = await createCloudClient(remote);
 
-    const testDir = await mkdtemp(join(tmpdir(), "qmd-roundtrip-"));
-    const dbPath = join(testDir, "source.sqlite");
-    const db = openDatabase(dbPath);
-    db.exec("PRAGMA journal_mode = WAL");
-    db.exec("PRAGMA foreign_keys = ON");
-    try { loadSqliteVec(db); } catch {}
+      const testDir = await mkdtemp(join(tmpdir(), "qmd-roundtrip-"));
+      const dbPath = join(testDir, "source.sqlite");
+      const db = openDatabase(dbPath);
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("PRAGMA foreign_keys = ON");
+      try {
+        loadSqliteVec(db);
+      } catch {}
 
-    db.exec(`CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`);
-    db.exec(`CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`);
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS content (hash TEXT PRIMARY KEY, doc TEXT NOT NULL, created_at TEXT NOT NULL)`,
+      );
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, collection TEXT NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL, hash TEXT NOT NULL, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
+      );
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS store_config (key TEXT PRIMARY KEY, value TEXT)`,
+      );
+      db.exec(
+        `CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')`,
+      );
 
-    const insert = db.prepare("INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)");
-    const insertDoc = db.prepare("INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)");
-    for (let i = 0; i < 5; i++) {
-      const hash = `rthash${i}`;
-      insert.run(hash, `round-trip content ${i}`, "2026-01-01");
-      insertDoc.run("rt", `rt${i}.md`, `RT ${i}`, hash, "2026-01-01", "2026-01-01");
-    }
-    db.prepare("INSERT INTO store_config (key, value) VALUES (?, ?)").run("config_hash", "rt-test");
+      const insert = db.prepare(
+        "INSERT INTO content (hash, doc, created_at) VALUES (?, ?, ?)",
+      );
+      const insertDoc = db.prepare(
+        "INSERT INTO documents (collection, path, title, hash, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      for (let i = 0; i < 5; i++) {
+        const hash = `rthash${i}`;
+        insert.run(hash, `round-trip content ${i}`, "2026-01-01");
+        insertDoc.run(
+          "rt",
+          `rt${i}.md`,
+          `RT ${i}`,
+          hash,
+          "2026-01-01",
+          "2026-01-01",
+        );
+      }
+      db.prepare("INSERT INTO store_config (key, value) VALUES (?, ?)").run(
+        "config_hash",
+        "rt-test",
+      );
 
-    db.close();
+      db.close();
 
-    const sourceDb = openDatabase(dbPath);
-    try { loadSqliteVec(sourceDb); } catch {}
-    sourceDb.close();
+      const sourceDb = openDatabase(dbPath);
+      try {
+        loadSqliteVec(sourceDb);
+      } catch {}
+      sourceDb.close();
 
-    const { pushToRemote } = await import("../src/cloud/push.js");
-    const pushDb = openDatabase(dbPath);
-    const pushResult = await pushToRemote(pushDb, client);
-    expect(pushResult.tables.content.rows).toBe(5);
-    expect(pushResult.tables.documents.rows).toBe(5);
-    pushDb.close();
+      const { pushToRemote } = await import("../src/cloud/push.js");
+      const pushDb = openDatabase(dbPath);
+      const pushResult = await pushToRemote(pushDb, client);
+      expect(pushResult.tables.content.rows).toBe(5);
+      expect(pushResult.tables.documents.rows).toBe(5);
+      pushDb.close();
 
-    const { pullFromRemote } = await import("../src/cloud/pull.js");
-    const pullDbPath = join(testDir, "pulled.sqlite");
-    const pullResult = await pullFromRemote(client, pullDbPath, { force: true });
+      const { pullFromRemote } = await import("../src/cloud/pull.js");
+      const pullDbPath = join(testDir, "pulled.sqlite");
+      const pullResult = await pullFromRemote(client, pullDbPath, {
+        force: true,
+      });
 
-    expect(pullResult.swapped).toBe(true);
-    expect(pullResult.tables.content.rows).toBe(5);
-    expect(pullResult.tables.documents.rows).toBe(5);
+      expect(pullResult.swapped).toBe(true);
+      expect(pullResult.tables.content.rows).toBe(5);
+      expect(pullResult.tables.documents.rows).toBe(5);
 
-    const pulledDb = openDatabase(pullDbPath);
-    const contentCount = (pulledDb.prepare("SELECT count(*) as cnt FROM content").get() as { cnt: number }).cnt;
-    expect(contentCount).toBe(5);
+      const pulledDb = openDatabase(pullDbPath);
+      const contentCount = (
+        pulledDb.prepare("SELECT count(*) as cnt FROM content").get() as {
+          cnt: number;
+        }
+      ).cnt;
+      expect(contentCount).toBe(5);
 
-    const docs = pulledDb.prepare("SELECT title FROM documents ORDER BY id").all() as { title: string }[];
-    expect(docs.map(d => d.title)).toEqual(["RT 0", "RT 1", "RT 2", "RT 3", "RT 4"]);
+      const docs = pulledDb
+        .prepare("SELECT title FROM documents ORDER BY id")
+        .all() as { title: string }[];
+      expect(docs.map((d) => d.title)).toEqual([
+        "RT 0",
+        "RT 1",
+        "RT 2",
+        "RT 3",
+        "RT 4",
+      ]);
 
-    const ftsResults = pulledDb.prepare("SELECT * FROM documents_fts WHERE documents_fts MATCH 'round'").all();
-    expect(ftsResults.length).toBeGreaterThan(0);
+      const ftsResults = pulledDb
+        .prepare(
+          "SELECT * FROM documents_fts WHERE documents_fts MATCH 'round'",
+        )
+        .all();
+      expect(ftsResults.length).toBeGreaterThan(0);
 
-    pulledDb.close();
-    client.close();
-    await rm(testDir, { recursive: true, force: true });
-  });
-});
+      pulledDb.close();
+      client.close();
+      await rm(testDir, { recursive: true, force: true });
+    });
+  },
+);
