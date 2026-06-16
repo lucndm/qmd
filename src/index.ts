@@ -68,10 +68,7 @@ import {
   listInboxFiles as storeListInboxFiles,
   ensureInboxCollection as storeEnsureInboxCollection,
 } from "./store.js";
-import {
-  LlamaCpp,
-  type LLM,
-} from "./llm.js";
+import { LlamaCpp, type LLM } from "./llm.js";
 import { OpenAILLM, type OpenAILLMConfig } from "./llm-openai.js";
 
 // Re-export OpenAI backend for direct use
@@ -89,7 +86,10 @@ function resolveLLMBackend(models?: ModelsConfig): LLMBackendConfig {
     return {
       type: "api",
       config: {
-        baseUrl: process.env.QMD_API_BASE_URL || models?.api_base_url || "https://z.minhluc.info/",
+        baseUrl:
+          process.env.QMD_API_BASE_URL ||
+          models?.api_base_url ||
+          "https://z.minhluc.info/",
         apiKey: process.env.QMD_API_KEY || models?.api_key,
         embedModel: process.env.QMD_EMBED_MODEL || models?.embed,
         generateModel: process.env.QMD_GENERATE_MODEL || models?.generate,
@@ -108,6 +108,7 @@ import {
   addContext as collectionsAddContext,
   removeContext as collectionsRemoveContext,
   setGlobalContext as collectionsSetGlobalContext,
+  setDbCollections,
   type Collection,
   type CollectionConfig,
   type NamedCollection,
@@ -263,26 +264,44 @@ export interface QMDStore {
   searchLex(query: string, options?: LexSearchOptions): Promise<SearchResult[]>;
 
   /** Vector similarity search (embedding model, no reranking) */
-  searchVector(query: string, options?: VectorSearchOptions): Promise<SearchResult[]>;
+  searchVector(
+    query: string,
+    options?: VectorSearchOptions,
+  ): Promise<SearchResult[]>;
 
   /** Expand a query into typed sub-searches (lex/vec/hyde) for manual control */
-  expandQuery(query: string, options?: ExpandQueryOptions): Promise<ExpandedQuery[]>;
+  expandQuery(
+    query: string,
+    options?: ExpandQueryOptions,
+  ): Promise<ExpandedQuery[]>;
 
   // ── Document Retrieval ──────────────────────────────────────────────
 
   /** Get a single document by path or docid */
-  get(pathOrDocid: string, options?: { includeBody?: boolean }): Promise<DocumentResult | DocumentNotFound>;
+  get(
+    pathOrDocid: string,
+    options?: { includeBody?: boolean },
+  ): Promise<DocumentResult | DocumentNotFound>;
 
   /** Get the body content of a document, optionally sliced by line range */
-  getDocumentBody(pathOrDocid: string, opts?: { fromLine?: number; maxLines?: number }): Promise<string | null>;
+  getDocumentBody(
+    pathOrDocid: string,
+    opts?: { fromLine?: number; maxLines?: number },
+  ): Promise<string | null>;
 
   /** Get multiple documents by glob pattern or comma-separated list */
-  multiGet(pattern: string, options?: { includeBody?: boolean; maxBytes?: number }): Promise<{ docs: MultiGetResult[]; errors: string[] }>;
+  multiGet(
+    pattern: string,
+    options?: { includeBody?: boolean; maxBytes?: number },
+  ): Promise<{ docs: MultiGetResult[]; errors: string[] }>;
 
   // ── Collection Management ───────────────────────────────────────────
 
   /** Add or update a collection */
-  addCollection(name: string, opts: { path: string; pattern?: string; ignore?: string[] }): Promise<void>;
+  addCollection(
+    name: string,
+    opts: { path: string; pattern?: string; ignore?: string[] },
+  ): Promise<void>;
 
   /** Remove a collection */
   removeCollection(name: string): Promise<boolean>;
@@ -291,7 +310,17 @@ export interface QMDStore {
   renameCollection(oldName: string, newName: string): Promise<boolean>;
 
   /** List all collections with document stats */
-  listCollections(): Promise<{ name: string; pwd: string; glob_pattern: string; doc_count: number; active_count: number; last_modified: string | null; includeByDefault: boolean }[]>;
+  listCollections(): Promise<
+    {
+      name: string;
+      pwd: string;
+      glob_pattern: string;
+      doc_count: number;
+      active_count: number;
+      last_modified: string | null;
+      includeByDefault: boolean;
+    }[]
+  >;
 
   /** Get names of collections included by default in queries */
   getDefaultCollectionNames(): Promise<string[]>;
@@ -299,7 +328,11 @@ export interface QMDStore {
   // ── Context Management ──────────────────────────────────────────────
 
   /** Add context for a path within a collection */
-  addContext(collectionName: string, pathPrefix: string, contextText: string): Promise<boolean>;
+  addContext(
+    collectionName: string,
+    pathPrefix: string,
+    contextText: string,
+  ): Promise<boolean>;
 
   /** Remove context from a collection path */
   removeContext(collectionName: string, pathPrefix: string): Promise<boolean>;
@@ -311,7 +344,9 @@ export interface QMDStore {
   getGlobalContext(): Promise<string | undefined>;
 
   /** List all contexts across all collections */
-  listContexts(): Promise<Array<{ collection: string; path: string; context: string }>>;
+  listContexts(): Promise<
+    Array<{ collection: string; path: string; context: string }>
+  >;
 
   // ── Indexing ────────────────────────────────────────────────────────
 
@@ -344,10 +379,18 @@ export interface QMDStore {
   // ── Inbox & Upload ──────────────────────────────────────────────────
 
   /** Ingest a file: save content, index FTS, generate embeddings. Targets inbox if no collection specified. */
-  ingestFile(content: string, filename: string, options?: { collection?: string; path?: string }): Promise<IngestResult>;
+  ingestFile(
+    content: string,
+    filename: string,
+    options?: { collection?: string; path?: string },
+  ): Promise<IngestResult>;
 
   /** Move a file from inbox to a target collection */
-  moveInboxFile(filename: string, targetCollection: string, targetPath?: string): Promise<{ from: string; to: string; file: string }>;
+  moveInboxFile(
+    filename: string,
+    targetCollection: string,
+    targetPath?: string,
+  ): Promise<{ from: string; to: string; file: string }>;
 
   /** List files currently in the inbox directory */
   listInboxFiles(): string[];
@@ -413,17 +456,23 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // else: DB-only mode — no external config, use existing store_collections
 
+  // Inject cloud-synced collections from DB so getCollection/listCollections
+  // resolve collections not in local YAML (cross-instance merge via Turso)
+  const dbCols = getStoreCollections(db);
+  setDbCollections(dbCols);
+
   // Resolve LLM backend: "local" (LlamaCpp + GGUF) or "api" (OpenAI-compatible via LiteLLM proxy)
   const backend = resolveLLMBackend(config?.models);
-  const llm: LLM = backend.type === "api"
-    ? new OpenAILLM(backend.config)
-    : new LlamaCpp({
-        embedModel: config?.models?.embed,
-        generateModel: config?.models?.generate,
-        rerankModel: config?.models?.rerank,
-        inactivityTimeoutMs: 5 * 60 * 1000,
-        disposeModelsOnInactivity: true,
-      });
+  const llm: LLM =
+    backend.type === "api"
+      ? new OpenAILLM(backend.config)
+      : new LlamaCpp({
+          embedModel: config?.models?.embed,
+          generateModel: config?.models?.generate,
+          rerankModel: config?.models?.rerank,
+          inactivityTimeoutMs: 5 * 60 * 1000,
+          disposeModelsOnInactivity: true,
+        });
   internal.llm = llm;
 
   const store: QMDStore = {
@@ -468,9 +517,12 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         chunkStrategy: opts.chunkStrategy,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
-    searchVector: async (q, opts) => internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
-    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
+    searchLex: async (q, opts) =>
+      internal.searchFTS(q, opts?.limit, opts?.collection),
+    searchVector: async (q, opts) =>
+      internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
+    expandQuery: async (q, opts) =>
+      internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
       const result = internal.findDocument(pathOrDocid, { includeBody: false });
@@ -481,7 +533,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
     // Collection Management — write to SQLite + write-through to YAML/inline if configured
     addCollection: async (name, opts) => {
-      upsertStoreCollection(db, name, { path: opts.path, pattern: opts.pattern, ignore: opts.ignore });
+      upsertStoreCollection(db, name, {
+        path: opts.path,
+        pattern: opts.pattern,
+        ignore: opts.ignore,
+      });
       if (hasYamlConfig || options.config) {
         collectionsAddCollection(name, opts.path, opts.pattern);
       }
@@ -503,12 +559,17 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     listCollections: async () => storeListCollections(db),
     getDefaultCollectionNames: async () => {
       const collections = storeListCollections(db);
-      return collections.filter(c => c.includeByDefault).map(c => c.name);
+      return collections.filter((c) => c.includeByDefault).map((c) => c.name);
     },
 
     // Context Management — write to SQLite + write-through to YAML/inline if configured
     addContext: async (collectionName, pathPrefix, contextText) => {
-      const result = updateStoreContext(db, collectionName, pathPrefix, contextText);
+      const result = updateStoreContext(
+        db,
+        collectionName,
+        pathPrefix,
+        contextText,
+      );
       if (hasYamlConfig || options.config) {
         collectionsAddContext(collectionName, pathPrefix, contextText);
       }
@@ -534,20 +595,30 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     update: async (updateOpts) => {
       const collections = getStoreCollections(db);
       const filtered = updateOpts?.collections
-        ? collections.filter(c => updateOpts.collections!.includes(c.name))
+        ? collections.filter((c) => updateOpts.collections!.includes(c.name))
         : collections;
 
       internal.clearCache();
 
-      let totalIndexed = 0, totalUpdated = 0, totalUnchanged = 0, totalRemoved = 0;
+      let totalIndexed = 0,
+        totalUpdated = 0,
+        totalUnchanged = 0,
+        totalRemoved = 0;
 
       for (const col of filtered) {
-        const result = await reindexCollection(internal, col.path, col.pattern || "**/*.md", col.name, {
-          ignorePatterns: col.ignore,
-          onProgress: updateOpts?.onProgress
-            ? (info) => updateOpts.onProgress!({ collection: col.name, ...info })
-            : undefined,
-        });
+        const result = await reindexCollection(
+          internal,
+          col.path,
+          col.pattern || "**/*.md",
+          col.name,
+          {
+            ignorePatterns: col.ignore,
+            onProgress: updateOpts?.onProgress
+              ? (info) =>
+                  updateOpts.onProgress!({ collection: col.name, ...info })
+              : undefined,
+          },
+        );
         totalIndexed += result.indexed;
         totalUpdated += result.updated;
         totalUnchanged += result.unchanged;
@@ -581,8 +652,10 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     getIndexHealth: async () => internal.getIndexHealth(),
 
     // Inbox & Upload
-    ingestFile: async (content, filename, opts) => storeIngestFile(internal, content, filename, opts),
-    moveInboxFile: async (filename, collection, path) => storeMoveInboxFile(internal, filename, collection, path),
+    ingestFile: async (content, filename, opts) =>
+      storeIngestFile(internal, content, filename, opts),
+    moveInboxFile: async (filename, collection, path) =>
+      storeMoveInboxFile(internal, filename, collection, path),
     listInboxFiles: () => storeListInboxFiles(),
 
     // Lifecycle
