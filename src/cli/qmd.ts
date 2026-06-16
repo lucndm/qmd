@@ -115,8 +115,6 @@ import {
   type CloudConfig,
 } from "../cloud/config.js";
 import { validateConnection, createCloudClient } from "../cloud/client.js";
-import { pushToRemote } from "../cloud/push.js";
-import { pullFromRemote } from "../cloud/pull.js";
 import {
   disposeDefaultLlamaCpp,
   getDefaultLlamaCpp,
@@ -6055,98 +6053,38 @@ if (isMain) {
           break;
         }
 
-        case "push": {
-          const pushConfig = loadCloudConfig();
-          if (!pushConfig || Object.keys(pushConfig.remotes).length === 0) {
-            console.error(
-              "No cloud remote configured. Run 'qmd cloud login' first.",
-            );
-            process.exit(1);
-          }
-          const pushRemoteName = resolveRemoteName(
-            cli.values.name as string | undefined,
-          );
-          const pushRemote = pushConfig.remotes[pushRemoteName];
-          if (!pushRemote) {
-            console.error(
-              `Remote '${pushRemoteName}' not found. Run 'qmd cloud login' first.`,
-            );
-            process.exit(1);
-          }
-          try {
-            const pushClient = await createCloudClient(pushRemote);
-            const pushStore = getStore();
-            console.log(`Pushing to ${pushRemoteName} (${pushRemote.url})...`);
-            const pushResult = await pushToRemote(pushStore.db, pushClient);
-            pushClient.close();
-            for (const [tname, info] of Object.entries(pushResult.tables)) {
+        case "push":
+        case "pull":
+        case "sync": {
+          const store = getStore();
+          if (store.db.sync) {
+            console.log("Triggering replica sync...");
+            try {
+              const result = (await store.db.sync()) as {
+                frames_synced?: number;
+              };
               console.log(
-                `  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`,
+                `${c.green}Sync complete${c.reset}` +
+                  (result?.frames_synced != null
+                    ? ` (${result.frames_synced} frames)`
+                    : ""),
               );
+            } catch (err) {
+              console.error(
+                `Sync failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              process.exit(1);
             }
-            const pushSec = (pushResult.durationMs / 1000).toFixed(1);
-            console.log(`${c.green}Push complete${c.reset} (${pushSec}s)`);
-          } catch (err) {
-            console.error(
-              `Push failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            process.exit(1);
-          }
-          break;
-        }
-
-        case "pull": {
-          const pullConfig = loadCloudConfig();
-          if (!pullConfig || Object.keys(pullConfig.remotes).length === 0) {
-            console.error(
-              "No cloud remote configured. Run 'qmd cloud login' first.",
-            );
-            process.exit(1);
-          }
-          const pullRemoteName = resolveRemoteName(
-            cli.values.name as string | undefined,
-          );
-          const pullRemote = pullConfig.remotes[pullRemoteName];
-          if (!pullRemote) {
-            console.error(
-              `Remote '${pullRemoteName}' not found. Run 'qmd cloud login' first.`,
-            );
-            process.exit(1);
-          }
-          try {
-            const pullClient = await createCloudClient(pullRemote);
-            const pullDbPath = getDbPath();
-            const pullForce = !!cli.values.force;
+          } else {
             console.log(
-              `Pulling from ${pullRemoteName} (${pullRemote.url})...`,
+              "Replica sync not available (standalone mode). Set LIBSQL_URL to enable.",
             );
-            const pullResult = await pullFromRemote(pullClient, pullDbPath, {
-              force: pullForce,
-            });
-            pullClient.close();
-            if (!pullResult.swapped) {
-              console.log(`${c.green}Already up to date.${c.reset}`);
-            } else {
-              for (const [tname, info] of Object.entries(pullResult.tables)) {
-                console.log(
-                  `  ${tname}: ${info.rows} rows ${c.green}✓${c.reset}`,
-                );
-              }
-              const pullSec = (pullResult.durationMs / 1000).toFixed(1);
-              console.log(`${c.green}Pull complete${c.reset} (${pullSec}s)`);
-              closeDb();
-            }
-          } catch (err) {
-            console.error(
-              `Pull failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            process.exit(1);
           }
           break;
         }
 
         default: {
-          console.error("Usage: qmd cloud <login|logout|status|push|pull>");
+          console.error("Usage: qmd cloud <login|logout|status|sync>");
           console.error("");
           console.error("Commands:");
           console.error(

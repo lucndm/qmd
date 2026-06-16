@@ -953,10 +953,6 @@ export async function startMcpServer(
   const server = await createMcpServer(store);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
-  // Start background cloud sync if QMD_SYNC_INTERVAL is set
-  const { startAutoSync } = await import("../cloud/auto-sync.js");
-  startAutoSync(() => store.internal.db);
 }
 
 // =============================================================================
@@ -1434,10 +1430,6 @@ export async function startMcpHttpServer(
 
   const bindAddr = process.env.QMD_BIND_ADDRESS || "0.0.0.0";
   log(`QMD MCP server listening on http://${bindAddr}:${actualPort}/mcp`);
-
-  // Start background cloud sync if QMD_SYNC_INTERVAL is set
-  const { startAutoSync } = await import("../cloud/auto-sync.js");
-  startAutoSync(() => store.internal.db);
 
   return { httpServer, port: actualPort, stop };
 }
