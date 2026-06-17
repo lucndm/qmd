@@ -11,6 +11,8 @@
 
 export const isBun = "Bun" in globalThis;
 
+import { existsSync, unlinkSync } from "fs";
+
 export type SQLiteValue =
   | string
   | number
@@ -103,11 +105,19 @@ export function openDatabase(path: string, opts?: ReplicaOptions): Database {
         msg.includes("403") ||
         msg.includes("Forbidden") ||
         msg.includes("plan") ||
-        msg.includes("malformed")
+        msg.includes("malformed") ||
+        msg.includes("local state")
       ) {
         process.stderr.write(
           `[qmd] Embedded replica unavailable (${msg.split("\n")[0]}). Using standalone mode.\n`,
         );
+        // Delete corrupted/partial DB file from failed replica attempt
+        try {
+          for (const suffix of ["", "-shm", "-wal", "-info"]) {
+            const f = path + suffix;
+            if (existsSync(f)) unlinkSync(f);
+          }
+        } catch {}
         return new _Database(path) as Database;
       }
       throw err;
