@@ -930,11 +930,16 @@ function rebuildFtsIfBroken(db: Database, force = false): void {
     console.warn("FTS rebuild: starting full rebuild...");
 
     // Drop and recreate FTS for clean state
-    db.exec("DROP TABLE IF EXISTS documents_fts");
-    db.exec(
-      "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')",
-    );
+    try {
+      db.exec("DROP TABLE IF EXISTS documents_fts");
+    } catch {}
+    try {
+      db.exec(
+        "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')",
+      );
+    } catch {}
 
+    // Fetch all docs in one query, insert in batches
     const docs = db
       .prepare(
         "SELECT d.id, d.collection, d.path, d.title, c.doc FROM documents d JOIN content c ON d.hash = c.hash WHERE d.active = 1",
@@ -947,25 +952,21 @@ function rebuildFtsIfBroken(db: Database, force = false): void {
       doc: string;
     }[];
 
-    // Batch insert via transaction
+    // Single transaction for all inserts — much faster over HTTP
     const insert = db.prepare(
       "INSERT INTO documents_fts (rowid, filepath, title, body) VALUES (?, ?, ?, ?)",
     );
-    const batchSize = 100;
-    for (let i = 0; i < docs.length; i += batchSize) {
-      const batch = docs.slice(i, i + batchSize);
-      const tx = db.transaction(() => {
-        for (const r of batch) {
-          insert.run(
-            r.id as unknown as SQLiteValue,
-            r.collection + "/" + r.path,
-            r.title,
-            r.doc,
-          );
-        }
-      });
-      tx();
-    }
+    const tx = db.transaction(() => {
+      for (const r of docs) {
+        insert.run(
+          r.id as unknown as SQLiteValue,
+          r.collection + "/" + r.path,
+          r.title,
+          r.doc,
+        );
+      }
+    });
+    tx();
     console.warn(`FTS rebuilt: ${docs.length} documents indexed`);
   } catch {
     // FTS table may not exist yet — ignore
