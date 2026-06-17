@@ -939,35 +939,47 @@ function rebuildFtsIfBroken(db: Database, force = false): void {
       );
     } catch {}
 
-    // Fetch all docs in one query, insert in batches
-    const docs = db
+    // Get total doc count
+    const totalRow = db
       .prepare(
-        "SELECT d.id, d.collection, d.path, d.title, c.doc FROM documents d JOIN content c ON d.hash = c.hash WHERE d.active = 1",
+        "SELECT count(*) as c FROM documents d JOIN content c ON d.hash = c.hash WHERE d.active = 1",
       )
-      .all() as {
-      id: number;
-      collection: string;
-      path: string;
-      title: string;
-      doc: string;
-    }[];
+      .get() as { c: number };
+    const total = totalRow.c;
 
-    // Single transaction for all inserts — much faster over HTTP
+    // Fetch + insert in small chunks to avoid HTTP response size limits
     const insert = db.prepare(
       "INSERT INTO documents_fts (rowid, filepath, title, body) VALUES (?, ?, ?, ?)",
     );
-    const tx = db.transaction(() => {
-      for (const r of docs) {
-        insert.run(
-          r.id as unknown as SQLiteValue,
-          r.collection + "/" + r.path,
-          r.title,
-          r.doc,
-        );
-      }
-    });
-    tx();
-    console.warn(`FTS rebuilt: ${docs.length} documents indexed`);
+    const chunkSize = 10;
+    let done = 0;
+    for (let offset = 0; offset < total; offset += chunkSize) {
+      const chunk = db
+        .prepare(
+          "SELECT d.id, d.collection, d.path, d.title, c.doc FROM documents d JOIN content c ON d.hash = c.hash WHERE d.active = 1 LIMIT ? OFFSET ?",
+        )
+        .all(chunkSize, offset) as {
+        id: number;
+        collection: string;
+        path: string;
+        title: string;
+        doc: string;
+      }[];
+      if (chunk.length === 0) break;
+      const tx = db.transaction(() => {
+        for (const r of chunk) {
+          insert.run(
+            r.id as unknown as SQLiteValue,
+            r.collection + "/" + r.path,
+            r.title,
+            r.doc,
+          );
+        }
+      });
+      tx();
+      done += chunk.length;
+    }
+    console.warn(`FTS rebuilt: ${done} documents indexed`);
   } catch {
     // FTS table may not exist yet — ignore
   }
