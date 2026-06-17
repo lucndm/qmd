@@ -1007,13 +1007,8 @@ function initializeDatabase(db: Database): void {
   // For remote DB connections, schema is managed on the server — skip all local init
   const isRemote = !isBun && !!process.env.LIBSQL_URL;
   if (isRemote) {
-    // Remote mode: skip schema init, PRAGMA. Always force FTS rebuild for consistency.
+    // Remote mode: skip schema init, PRAGMA. FTS is managed on the server directly.
     _sqliteVecAvailable = true;
-    setTimeout(() => {
-      try {
-        rebuildFtsIfBroken(db, true);
-      } catch {}
-    }, 5000);
     return;
   }
 
