@@ -95,13 +95,18 @@ export function openDatabase(path: string, opts?: ReplicaOptions): Database {
         syncPeriod: opts.syncPeriod ?? 60,
       }) as Database;
     } catch (err) {
-      // Existing DB without replica metadata — fall back to standalone
-      // This happens when upgrading an existing QMD installation
+      // Fall back to standalone for known recoverable errors
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("wal_index") || msg.includes("metadata")) {
+      if (
+        msg.includes("wal_index") ||
+        msg.includes("metadata") ||
+        msg.includes("403") ||
+        msg.includes("Forbidden") ||
+        msg.includes("plan") ||
+        msg.includes("malformed")
+      ) {
         process.stderr.write(
-          `[qmd] Embedded replica unavailable (existing DB needs reset). Using standalone mode.\n` +
-            `[qmd] To enable replica: delete ${path} and restart.\n`,
+          `[qmd] Embedded replica unavailable (${msg.split("\n")[0]}). Using standalone mode.\n`,
         );
         return new _Database(path) as Database;
       }
