@@ -928,7 +928,12 @@ function rebuildFtsIfBroken(db: Database): void {
     console.warn(
       `FTS mismatch detected (${joinCount.c}/${docCount.c} joins). Rebuilding...`,
     );
-    db.exec("DELETE FROM documents_fts");
+
+    // Drop and recreate FTS for clean state
+    db.exec("DROP TABLE IF EXISTS documents_fts");
+    db.exec(
+      "CREATE VIRTUAL TABLE documents_fts USING fts5(filepath, title, body, tokenize='porter unicode61')",
+    );
 
     const docs = db
       .prepare(
@@ -942,16 +947,24 @@ function rebuildFtsIfBroken(db: Database): void {
       doc: string;
     }[];
 
+    // Batch insert via transaction
     const insert = db.prepare(
       "INSERT INTO documents_fts (rowid, filepath, title, body) VALUES (?, ?, ?, ?)",
     );
-    for (const r of docs) {
-      insert.run(
-        r.id as unknown as SQLiteValue,
-        r.collection + "/" + r.path,
-        r.title,
-        r.doc,
-      );
+    const batchSize = 100;
+    for (let i = 0; i < docs.length; i += batchSize) {
+      const batch = docs.slice(i, i + batchSize);
+      const tx = db.transaction(() => {
+        for (const r of batch) {
+          insert.run(
+            r.id as unknown as SQLiteValue,
+            r.collection + "/" + r.path,
+            r.title,
+            r.doc,
+          );
+        }
+      });
+      tx();
     }
     console.warn(`FTS rebuilt: ${docs.length} documents indexed`);
   } catch {
@@ -984,10 +997,14 @@ function initializeDatabase(db: Database): void {
     try {
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA foreign_keys = ON");
-      // Rebuild FTS after replica sync — FTS rowids may mismatch document IDs
-      // due to multi-instance autoincrement divergence
-      rebuildFtsIfBroken(db);
     } catch {}
+    // FTS rebuild runs async to avoid blocking startup
+    // (multi-instance autoincrement divergence causes FTS rowid mismatch)
+    setTimeout(() => {
+      try {
+        rebuildFtsIfBroken(db);
+      } catch {}
+    }, 5000);
     return;
   }
 
