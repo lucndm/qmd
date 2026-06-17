@@ -455,12 +455,20 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     // YAML mode: inject config source for write-through, sync to DB
     setConfigSource({ configPath: options.configPath });
     config = loadConfig();
-    syncConfigToDb(db, config);
+    try {
+      syncConfigToDb(db, config);
+    } catch {
+      // DB may be empty after replica fallback — tables will be created on next successful sync
+    }
   } else if (options.config) {
     // Inline config mode: inject config source for mutations, sync to DB
     setConfigSource({ config: options.config });
     config = options.config;
-    syncConfigToDb(db, config);
+    try {
+      syncConfigToDb(db, config);
+    } catch {
+      // Same as above
+    }
   }
   // else: DB-only mode — no external config, use existing store_collections
 
