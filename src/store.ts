@@ -16,6 +16,7 @@ import {
   loadSqliteVec,
   isBun,
   type ReplicaOptions,
+  type SQLiteValue,
 } from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
@@ -907,6 +908,57 @@ function rebuildFTSForCjkNormalization(db: Database): void {
   ).run(FTS_CJK_NORMALIZED_VERSION);
 }
 
+/**
+ * Check if FTS rowids match document IDs. If not, rebuild FTS from documents.
+ * This fixes multi-instance autoincrement divergence after replica sync.
+ */
+function rebuildFtsIfBroken(db: Database): void {
+  try {
+    const joinCount = db
+      .prepare(
+        "SELECT count(*) as c FROM documents_fts f JOIN documents d ON d.id = f.rowid WHERE d.active = 1",
+      )
+      .get() as { c: number };
+    const docCount = db
+      .prepare("SELECT count(*) as c FROM documents WHERE active = 1")
+      .get() as { c: number };
+
+    if (joinCount.c === docCount.c) return; // FTS is healthy
+
+    console.warn(
+      `FTS mismatch detected (${joinCount.c}/${docCount.c} joins). Rebuilding...`,
+    );
+    db.exec("DELETE FROM documents_fts");
+
+    const docs = db
+      .prepare(
+        "SELECT d.id, d.collection, d.path, d.title, c.doc FROM documents d JOIN content c ON d.hash = c.hash WHERE d.active = 1",
+      )
+      .all() as {
+      id: number;
+      collection: string;
+      path: string;
+      title: string;
+      doc: string;
+    }[];
+
+    const insert = db.prepare(
+      "INSERT INTO documents_fts (rowid, filepath, title, body) VALUES (?, ?, ?, ?)",
+    );
+    for (const r of docs) {
+      insert.run(
+        r.id as unknown as SQLiteValue,
+        r.collection + "/" + r.path,
+        r.title,
+        r.doc,
+      );
+    }
+    console.warn(`FTS rebuilt: ${docs.length} documents indexed`);
+  } catch {
+    // FTS table may not exist yet — ignore
+  }
+}
+
 function initializeDatabase(db: Database): void {
   if (isBun) {
     // Bun: load sqlite-vec extension
@@ -932,6 +984,9 @@ function initializeDatabase(db: Database): void {
     try {
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA foreign_keys = ON");
+      // Rebuild FTS after replica sync — FTS rowids may mismatch document IDs
+      // due to multi-instance autoincrement divergence
+      rebuildFtsIfBroken(db);
     } catch {}
     return;
   }
