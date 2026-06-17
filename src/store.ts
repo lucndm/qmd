@@ -912,22 +912,22 @@ function rebuildFTSForCjkNormalization(db: Database): void {
  * Check if FTS rowids match document IDs. If not, rebuild FTS from documents.
  * This fixes multi-instance autoincrement divergence after replica sync.
  */
-function rebuildFtsIfBroken(db: Database): void {
+function rebuildFtsIfBroken(db: Database, force = false): void {
   try {
-    const joinCount = db
-      .prepare(
-        "SELECT count(*) as c FROM documents_fts f JOIN documents d ON d.id = f.rowid WHERE d.active = 1",
-      )
-      .get() as { c: number };
-    const docCount = db
-      .prepare("SELECT count(*) as c FROM documents WHERE active = 1")
-      .get() as { c: number };
+    if (!force) {
+      const joinCount = db
+        .prepare(
+          "SELECT count(*) as c FROM documents_fts f JOIN documents d ON d.id = f.rowid WHERE d.active = 1",
+        )
+        .get() as { c: number };
+      const docCount = db
+        .prepare("SELECT count(*) as c FROM documents WHERE active = 1")
+        .get() as { c: number };
 
-    if (joinCount.c === docCount.c) return; // FTS is healthy
+      if (joinCount.c === docCount.c) return; // FTS is healthy
+    }
 
-    console.warn(
-      `FTS mismatch detected (${joinCount.c}/${docCount.c} joins). Rebuilding...`,
-    );
+    console.warn("FTS rebuild: starting full rebuild...");
 
     // Drop and recreate FTS for clean state
     db.exec("DROP TABLE IF EXISTS documents_fts");
@@ -994,8 +994,13 @@ function initializeDatabase(db: Database): void {
   // For remote DB connections, schema is managed on the server — skip all local init
   const isRemote = !isBun && !!process.env.LIBSQL_URL;
   if (isRemote) {
-    // Remote mode: skip schema init, PRAGMA, FTS rebuild (all managed on server)
+    // Remote mode: skip schema init, PRAGMA. Always force FTS rebuild for consistency.
     _sqliteVecAvailable = true;
+    setTimeout(() => {
+      try {
+        rebuildFtsIfBroken(db, true);
+      } catch {}
+    }, 5000);
     return;
   }
 
