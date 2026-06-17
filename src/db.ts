@@ -90,9 +90,59 @@ export interface ReplicaOptions {
 export function openDatabase(path: string, opts?: ReplicaOptions): Database {
   // Remote mode: connect directly to libSQL server (no local file)
   if (!isBun && opts?.syncUrl) {
-    return new _Database(opts.syncUrl, {
+    let remote = new _Database(opts.syncUrl, {
       authToken: opts.authToken,
     }) as Database;
+    let lastActivity = Date.now();
+
+    const refreshIfStale = () => {
+      if (Date.now() - lastActivity > 25000) {
+        try {
+          remote.close();
+        } catch {}
+        remote = new _Database(opts.syncUrl!, {
+          authToken: opts.authToken,
+        }) as Database;
+      }
+      lastActivity = Date.now();
+    };
+
+    // Wrap prepare/exec to reconnect on stream expiry
+    return {
+      prepare: (sql: string) => {
+        refreshIfStale();
+        try {
+          return remote.prepare(sql);
+        } catch (err) {
+          // Stream expired — reconnect and retry
+          remote = new _Database(opts.syncUrl!, {
+            authToken: opts.authToken,
+          }) as Database;
+          lastActivity = Date.now();
+          return remote.prepare(sql);
+        }
+      },
+      exec: (sql: string) => {
+        refreshIfStale();
+        try {
+          return remote.exec(sql);
+        } catch {
+          remote = new _Database(opts.syncUrl!, {
+            authToken: opts.authToken,
+          }) as Database;
+          lastActivity = Date.now();
+          return remote.exec(sql);
+        }
+      },
+      loadExtension: (p: string) => remote.loadExtension(p),
+      transaction: <T extends (...args: SQLiteValue[]) => unknown>(fn: T): T =>
+        remote.transaction(fn),
+      close: () => {
+        try {
+          remote.close();
+        } catch {}
+      },
+    } as Database;
   }
   return new _Database(path) as Database;
 }
