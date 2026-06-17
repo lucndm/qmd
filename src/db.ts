@@ -88,40 +88,11 @@ export interface ReplicaOptions {
  * that automatically syncs with the remote Turso/libSQL server.
  */
 export function openDatabase(path: string, opts?: ReplicaOptions): Database {
+  // Remote mode: connect directly to libSQL server (no local file)
   if (!isBun && opts?.syncUrl) {
-    // libsql embedded replica mode
-    try {
-      return new _Database(path, {
-        syncUrl: opts.syncUrl,
-        authToken: opts.authToken,
-        syncPeriod: opts.syncPeriod ?? 60,
-      }) as Database;
-    } catch (err) {
-      // Fall back to standalone for known recoverable errors
-      const msg = err instanceof Error ? err.message : String(err);
-      if (
-        msg.includes("wal_index") ||
-        msg.includes("metadata") ||
-        msg.includes("403") ||
-        msg.includes("Forbidden") ||
-        msg.includes("plan") ||
-        msg.includes("malformed") ||
-        msg.includes("local state")
-      ) {
-        process.stderr.write(
-          `[qmd] Embedded replica unavailable (${msg.split("\n")[0]}). Using standalone mode.\n`,
-        );
-        // Delete corrupted/partial DB file from failed replica attempt
-        try {
-          for (const suffix of ["", "-shm", "-wal", "-info"]) {
-            const f = path + suffix;
-            if (existsSync(f)) unlinkSync(f);
-          }
-        } catch {}
-        return new _Database(path) as Database;
-      }
-      throw err;
-    }
+    return new _Database(opts.syncUrl, {
+      authToken: opts.authToken,
+    }) as Database;
   }
   return new _Database(path) as Database;
 }
