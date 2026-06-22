@@ -2947,14 +2947,18 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(
           | undefined)
       : (db
           .prepare(
-            `SELECT v.id AS hash_seq, vector_distance_cos(vectors_vec.embedding, ?) AS distance
-             FROM vector_top_k('vectors_vec_idx', ?, 1) AS v
-             JOIN vectors_vec ON vectors_vec.hash_seq = v.id`,
+            // libsql-server v0.24.x does not expose the vector_top_k table
+            // function; fall back to a brute-force cosine scan. Acceptable
+            // for tens of thousands of vectors (~1.5s for 12k). Revisit once
+            // libsql ships vector_top_k or another KNN primitive.
+            `SELECT hash_seq, vector_distance_cos(embedding, ?) AS distance
+             FROM vectors_vec
+             ORDER BY distance ASC
+             LIMIT 1`,
           )
-          .get(
-            new Float32Array(result.embedding),
-            new Float32Array(result.embedding),
-          ) as { hash_seq: string; distance: number } | undefined);
+          .get(new Float32Array(result.embedding)) as
+          | { hash_seq: string; distance: number }
+          | undefined);
 
     if (!nearest) {
       return {
@@ -4615,15 +4619,16 @@ export async function searchVec(
       }[])
     : (db
         .prepare(
-          `SELECT v.id AS hash_seq, vector_distance_cos(vectors_vec.embedding, ?) AS distance
-           FROM vector_top_k('vectors_vec_idx', ?, ?) AS v
-           JOIN vectors_vec ON vectors_vec.hash_seq = v.id`,
+          // libsql-server v0.24.x does not expose the vector_top_k table
+          // function; fall back to a brute-force cosine scan. Acceptable
+          // for tens of thousands of vectors (~1.5s for 12k). Revisit once
+          // libsql ships vector_top_k or another KNN primitive.
+          `SELECT hash_seq, vector_distance_cos(embedding, ?) AS distance
+           FROM vectors_vec
+           ORDER BY distance ASC
+           LIMIT ?`,
         )
-        .all(
-          new Float32Array(embedding),
-          new Float32Array(embedding),
-          limit * 3,
-        ) as {
+        .all(new Float32Array(embedding), limit * 3) as {
         hash_seq: string;
         distance: number;
       }[]);
